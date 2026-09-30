@@ -55,6 +55,27 @@ function entry(overrides: Partial<PracticeSessionHistoryEntry>): PracticeSession
 }
 
 describe('findPracticeAttempt', () => {
+  it.each([
+    ['unit:123', 'unit:123'],
+    ['unit%3A123', 'unit:123'],
+    ['字面%号', '字面%号'],
+    ['bad%2', 'bad%2'],
+    ['unit%253A123', 'unit%3A123'],
+    ['%E4%B8%AD%E6%96%87%3A1', '中文:1'],
+  ])('matches raw or once-encoded route prop %s', (routeId, storedId) => {
+    expect(findPracticeAttempt([entry({ id: storedId })], routeId)?.id).toBe(storedId);
+  });
+
+  it('prioritizes raw literal percent IDs before a decoded collision', () => {
+    const literal = entry({ id: 'unit%3A123' });
+    const colon = entry({ id: 'unit:123' });
+    expect(findPracticeAttempt([colon, literal], literal.id)).toBe(literal);
+  });
+
+  it.each(['%', 'bad%2', '%E0%A4%A', 'missing', 'unit%253A123'])('never crashes or decodes repeatedly for %s', (routeId) => {
+    expect(findPracticeAttempt([entry({ id: 'unit:123' })], routeId)).toBeNull();
+  });
+
   it('returns the matching attempt or null', () => {
     const entries = [entry({ id: 'a', recordedAt: 200 }), entry({ id: 'b', recordedAt: 100 })];
 
@@ -102,7 +123,7 @@ describe('selectPracticeAttemptRetryAnswers', () => {
 describe('buildPracticeAttemptComparison', () => {
   it('positions the attempt in its unit series and diffs against the previous one', () => {
     const first = entry({ id: 'a1', recordedAt: 100, accuracy: 60, elapsedSeconds: 300 });
-    const second = entry({ id: 'a2', recordedAt: 200, accuracy: 80, elapsedSeconds: 240 });
+    const second = entry({ id: 'a2', parentAttemptId: 'a1', recordedAt: 200, accuracy: 80, elapsedSeconds: 240 });
     const otherUnit = entry({ id: 'b1', unitId: 'unit-2', recordedAt: 150, accuracy: 10 });
 
     const comparison = buildPracticeAttemptComparison([second, otherUnit, first], second);
@@ -128,13 +149,31 @@ describe('buildPracticeAttemptComparison', () => {
 
   it('diffs self-rated band for manual sessions without accuracy', () => {
     const first = entry({ id: 'w1', recordedAt: 100, skill: 'writing', accuracy: null, objectiveTotal: 0, selfRatedBand: 6 });
-    const second = entry({ id: 'w2', recordedAt: 200, skill: 'writing', accuracy: null, objectiveTotal: 0, selfRatedBand: 6.5 });
+    const second = entry({ id: 'w2', parentAttemptId: 'w1', recordedAt: 200, skill: 'writing', accuracy: null, objectiveTotal: 0, selfRatedBand: 6.5 });
 
     const comparison = buildPracticeAttemptComparison([second, first], second);
 
     expect(comparison.accuracyDelta).toBeNull();
     expect(comparison.bandDelta).toBe(0.5);
     expect(comparison.isPersonalBest).toBe(false);
+  });
+
+  it('does not turn temporal adjacency into a revision relationship', () => {
+    const first = entry({ id: 'a1', recordedAt: 100 });
+    const second = entry({ id: 'a2', recordedAt: 200 });
+    const comparison = buildPracticeAttemptComparison([second, first], second);
+    expect(comparison.previous).toBeNull();
+    expect(comparison.parentMissing).toBe(false);
+    expect(comparison.accuracyDelta).toBeNull();
+  });
+
+  it('uses an explicit non-adjacent parent and reports a missing/cross-unit parent honestly', () => {
+    const first = entry({ id: 'first', recordedAt: 100, accuracy: 60 });
+    const middle = entry({ id: 'middle', recordedAt: 200, accuracy: 90 });
+    const child = entry({ id: 'child', parentAttemptId: first.id, recordedAt: 300, accuracy: 80 });
+    expect(buildPracticeAttemptComparison([child, middle, first], child).previous).toBe(first);
+    expect(buildPracticeAttemptComparison([child, middle], child)).toMatchObject({ previous: null, parentMissing: true, accuracyDelta: null });
+    expect(buildPracticeAttemptComparison([child, { ...first, unitId: 'another' }], child).parentMissing).toBe(true);
   });
 
   it('does not claim a personal best when an earlier attempt scored higher', () => {

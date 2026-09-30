@@ -17,16 +17,21 @@ import {
   PenNib,
   Target,
 } from '@phosphor-icons/react';
-import { readPracticeSessionDraftStatuses, type PracticeSessionDraftStatus } from '@/lib/practice-session-draft';
+import type { PracticeSessionDraftStatus } from '@/lib/practice-session-draft';
+import { usePracticeDraftStatuses } from './usePracticeDraftStatuses';
 import {
   getPracticeLearningSummary,
+  getPracticeExamOverview,
   getPracticeRecommendationReason,
   getRecommendedPracticeUnits,
 } from '@/lib/practice-session-recommendations';
 import { PRACTICE_HISTORY_HREF } from '@/lib/practice-session-links';
 import { formatDifficulty } from '@/lib/question-labels';
 import { formatMinutes } from '@/lib/practice-clock';
-import type { PracticeUnit } from '@/lib/types';
+import type { ExamType, PracticeUnit } from '@/lib/types';
+import type { PracticeSessionCatalogUnit } from '@/lib/practice-catalog-types';
+import { EXAMS, getExamLabel, getExamLibraryHref, PRACTICE_SKILL_LABELS, resolveExam } from '@/lib/exam-config';
+import type { PracticeUnitsSource } from '@/lib/practice-units';
 import { riseChild, staggerParent } from '../ui/motion-presets';
 import { getDraftSummary, getSessionFlow, recommendationCopy } from './session-summary';
 
@@ -41,27 +46,13 @@ function formatMode(mode: PracticeUnit['mode']) {
 }
 
 function formatSkill(skill: PracticeUnit['skill']) {
-  const labels: Record<PracticeUnit['skill'], string> = {
-    foundation: 'Foundation',
-    reading: 'Reading',
-    listening: 'Listening',
-    writing: 'Writing',
-    speaking: 'Speaking',
-  };
-
-  return labels[skill] ?? skill;
+  return PRACTICE_SKILL_LABELS[skill];
 }
 
 type SkillFilter = 'all' | PracticeUnit['skill'];
 type UnitDraftStatus = PracticeSessionDraftStatus;
 
-const SKILL_FILTERS: { id: SkillFilter; label: string }[] = [
-  { id: 'all', label: '全部' },
-  { id: 'reading', label: 'Reading' },
-  { id: 'listening', label: 'Listening' },
-  { id: 'writing', label: 'Writing' },
-  { id: 'speaking', label: 'Speaking' },
-];
+type SessionExam = ExamType | 'all';
 
 const SKILL_TONES: Record<
   PracticeUnit['skill'],
@@ -96,6 +87,12 @@ const SKILL_TONES: Record<
     border: 'border-amber-200/75',
     hover: 'hover:border-amber-300',
   },
+  translation: {
+    Icon: PenNib,
+    badge: 'bg-amber-50 text-amber-700',
+    border: 'border-amber-200/75',
+    hover: 'hover:border-amber-300',
+  },
   speaking: {
     Icon: Microphone,
     badge: 'bg-rose-50 text-rose-700',
@@ -104,19 +101,38 @@ const SKILL_TONES: Record<
   },
 };
 
-export default function PracticeSessionsView({ units }: { units: PracticeUnit[] }) {
+export default function PracticeSessionsView({ units, userId, exam = 'ielts', source = 'local' }: {
+  units: PracticeSessionCatalogUnit[];
+  userId: string;
+  exam?: SessionExam;
+  source?: PracticeUnitsSource;
+}) {
   const [skillFilter, setSkillFilter] = useState<SkillFilter>('all');
-  const [draftStatuses] = useState<Record<string, UnitDraftStatus>>(() => readPracticeSessionDraftStatuses(units));
+  const examUnits = useMemo(
+    () => exam === 'all' ? units : units.filter((unit) => resolveExam(unit.exam) === exam),
+    [exam, units]
+  );
+  const { statuses: allDraftStatuses, ready, unavailable } = usePracticeDraftStatuses(units, userId);
+  const draftStatuses = useMemo(() => Object.fromEntries(
+    examUnits.flatMap((unit) => allDraftStatuses[unit.id] ? [[unit.id, allDraftStatuses[unit.id]]] : [])
+  ), [allDraftStatuses, examUnits]);
+  const skillFilters: { id: SkillFilter; label: string }[] = [
+    { id: 'all', label: '全部' },
+    ...(EXAMS.find((item) => item.id === exam)?.skills ?? []).map((skill) => ({
+      id: skill,
+      label: formatSkill(skill),
+    })),
+  ];
 
   const filteredUnits = useMemo(
-    () => (skillFilter === 'all' ? units : units.filter((unit) => unit.skill === skillFilter)),
-    [skillFilter, units]
+    () => (skillFilter === 'all' ? examUnits : examUnits.filter((unit) => unit.skill === skillFilter)),
+    [skillFilter, examUnits]
   );
 
-  const recommendedUnits = useMemo(() => {
-    const candidates = filteredUnits.length ? filteredUnits : units;
-    return getRecommendedPracticeUnits(candidates, draftStatuses, 3);
-  }, [draftStatuses, filteredUnits, units]);
+  const recommendedUnits = useMemo(
+    () => ready && !unavailable ? getRecommendedPracticeUnits(filteredUnits, draftStatuses, 3) : [],
+    [draftStatuses, filteredUnits, ready, unavailable]
+  );
 
   const featuredUnit = recommendedUnits[0] ?? null;
   const learningSummary = useMemo(() => getPracticeLearningSummary(draftStatuses), [draftStatuses]);
@@ -124,6 +140,10 @@ export default function PracticeSessionsView({ units }: { units: PracticeUnit[] 
   const FeaturedIcon = featuredTone?.Icon ?? BookOpenText;
   const featuredFlow = featuredUnit ? getSessionFlow(featuredUnit) : [];
   const featuredDraftSummary = featuredUnit ? getDraftSummary(draftStatuses[featuredUnit.id]) : null;
+
+  if (exam === 'all') {
+    return <AllExamOverview units={units} statuses={allDraftStatuses} source={source} ready={ready} unavailable={unavailable} />;
+  }
 
   return (
     <main className="mx-auto min-h-[100dvh] max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
@@ -147,10 +167,10 @@ export default function PracticeSessionsView({ units }: { units: PracticeUnit[] 
               </Link>
             </div>
             <h1 className="text-display max-w-3xl text-3xl font-semibold text-ink sm:text-4xl">
-              从单题训练，走向整组 IELTS 任务。
+              {getExamLabel(exam)} · 专项练习库
             </h1>
             <p className="mt-3 max-w-2xl text-sm leading-relaxed text-ink-subtle">
-              这里先用本地 sample 展示未来 Session Library 的形态：一篇材料、一组关联题、统一检查和复盘。当前不会读取或写入 Supabase practice tables。
+              一篇材料、一组关联题，完成作答后检查与复盘。{source === 'cet-trial' ? '限定参与者本机试用，仅显示已逐项复核的四套范围内容；非官方答案或公开发布。' : exam === 'ielts' ? '保留现有 IELTS 专项内容。' : '四六级内容为原创专项样例，不是官方真题或完整模拟试卷；写作与翻译需要自行复核，听力中的合成语音会明确标注。'}
             </p>
           </div>
 
@@ -160,30 +180,48 @@ export default function PracticeSessionsView({ units }: { units: PracticeUnit[] 
                 <Database size={22} weight="regular" />
               </span>
               <div>
-                <p className="text-sm font-semibold text-white">规划先行，不改库</p>
+                <p className="text-sm font-semibold text-white">{source === 'local' ? '本地内容目录' : source === 'cet-trial' ? '本机限定试用目录' : 'Supabase 内容目录'}</p>
                 <p className="mt-1 text-xs leading-relaxed text-white/65">
-                  本页通过 `practice-units.ts` local adapter 消费 sample data，用来预演 practice_units / practice_questions 上线后的入口体验。
+                  {source === 'local' ? '练习材料来自项目内置目录。' : source === 'cet-trial' ? '仅限获授权参与者；内容与音频不公开，云端同步保持关闭。' : '练习材料来自已部署的 Supabase practice tables。'}草稿保存在当前浏览器；{source === 'cet-trial' ? '请使用独立浏览器配置并按试用期限清理。' : '云端同步是否成功以练习页反馈为准。'}
                 </p>
               </div>
             </div>
             <div className="mt-5 grid grid-cols-3 gap-2">
-              <HeaderMetric label="Samples" value={String(units.length)} />
-              <HeaderMetric label="Writes" value="0" />
-              <HeaderMetric label="Mode" value="Preview" />
+              <HeaderMetric label="当前考试" value={exam.toUpperCase()} />
+              <HeaderMetric label="练习单元" value={String(examUnits.length)} />
+              <HeaderMetric label="内容来源" value={source === 'local' ? '内置' : source === 'cet-trial' ? '私有试用' : '云端'} />
             </div>
           </div>
         </motion.header>
+
+        <nav className="mt-8 flex flex-wrap gap-3" aria-label="选择考试">
+          <Link href="/practice/sessions?exam=all" className="rounded-full border border-line bg-surface px-5 py-3 text-sm font-semibold text-ink-subtle transition-colors hover:border-accent hover:text-accent">
+            全考试概览
+          </Link>
+          {EXAMS.map((item) => (
+            <Link
+              key={item.id}
+              href={getExamLibraryHref(item.id)}
+              aria-current={exam === item.id ? 'page' : undefined}
+              className={`rounded-full border px-5 py-3 text-sm font-semibold transition-colors active:scale-[0.98] ${
+                exam === item.id ? 'border-ink bg-ink text-white' : 'border-line bg-surface text-ink-subtle hover:border-accent hover:text-accent'
+              }`}
+            >
+              {item.label}
+            </Link>
+          ))}
+        </nav>
 
         <motion.section variants={riseChild} className="mt-8 grid gap-4 lg:grid-cols-[0.9fr_1.1fr]">
           <div className="rounded-[1.5rem] border border-line bg-surface p-5 shadow-[0_14px_40px_-32px_rgba(45,27,51,0.24)]">
             <p className="text-sm font-semibold text-ink">学习队列</p>
             <p className="mt-2 text-xs leading-relaxed text-ink-subtle">
-              根据本机草稿、已检查状态、标记和笔记生成推荐。当前仍然只读 localStorage，不写 Supabase。
+              仅根据本浏览器中 {getExamLabel(exam)} 的草稿、已检查状态、标记和笔记生成推荐，不混入其他考试的练习。{source === 'cet-trial' ? '本机历史可能保存题面、答案及作答，请仅使用隔离浏览器。' : ''}
             </p>
             <div className="mt-4 grid grid-cols-3 gap-2">
-              <LibraryMetric label="草稿" value={String(learningSummary.inProgress)} tone="amber" />
-              <LibraryMetric label="待复盘" value={String(learningSummary.needsReview)} tone="sky" />
-              <LibraryMetric label="已检查" value={String(learningSummary.checked)} tone="emerald" />
+              <LibraryMetric label="草稿" value={!ready || unavailable ? '—' : String(learningSummary.inProgress)} tone="amber" />
+              <LibraryMetric label="待复盘" value={!ready || unavailable ? '—' : String(learningSummary.needsReview)} tone="sky" />
+              <LibraryMetric label="已检查" value={!ready || unavailable ? '—' : String(learningSummary.checked)} tone="emerald" />
             </div>
           </div>
 
@@ -198,7 +236,7 @@ export default function PracticeSessionsView({ units }: { units: PracticeUnit[] 
               </span>
             </div>
 
-            {recommendedUnits.length > 0 ? (
+            {!ready || unavailable ? <p role="status" className="mt-4 text-sm text-ink-muted">{!ready ? '本机草稿进度加载中…' : '本机草稿进度不可用，读取失败不代表尚未练习。基本目录入口仍可使用。'}</p> : recommendedUnits.length > 0 ? (
               <div className="mt-4 grid gap-2 sm:grid-cols-3">
                 {recommendedUnits.map((unit) => {
                   const tone = SKILL_TONES[unit.skill];
@@ -229,7 +267,7 @@ export default function PracticeSessionsView({ units }: { units: PracticeUnit[] 
                 })}
               </div>
             ) : (
-              <EmptySessionState title="暂无推荐" description="当前筛选下没有可推荐的 Session。切换技能筛选或添加本地 sample 后会自动出现推荐。" />
+              <EmptySessionState title="暂无推荐" description="当前考试与技能下没有可推荐的练习。可以切换技能，但不会自动推荐其他考试的内容。" />
             )}
           </div>
         </motion.section>
@@ -244,7 +282,7 @@ export default function PracticeSessionsView({ units }: { units: PracticeUnit[] 
                 <div className="flex flex-wrap items-center gap-2">
                   <span className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold ${featuredTone?.badge ?? 'bg-accent-tint text-accent'}`}>
                     <FeaturedIcon size={14} weight="regular" />
-                    Featured {formatSkill(featuredUnit.skill)} MVP
+                    推荐 · {formatSkill(featuredUnit.skill)}
                   </span>
                   {featuredDraftSummary && (
                     <span className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${featuredDraftSummary.className}`}>
@@ -290,11 +328,11 @@ export default function PracticeSessionsView({ units }: { units: PracticeUnit[] 
           <div className="mb-5 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <h2 className="text-xl font-semibold text-ink">Session Library</h2>
-              <p className="mt-1 text-sm text-ink-subtle">后续 Reading / Listening / Writing / Speaking 的 practice units 会在这里汇总。</p>
+              <p className="mt-1 text-sm text-ink-subtle">当前显示 {getExamLabel(exam)} 的练习单元。切换技能进一步筛选。</p>
             </div>
             <div className="flex flex-wrap gap-2">
-              {SKILL_FILTERS.map((filter) => {
-                const count = filter.id === 'all' ? units.length : units.filter((unit) => unit.skill === filter.id).length;
+              {skillFilters.map((filter) => {
+                const count = filter.id === 'all' ? examUnits.length : examUnits.filter((unit) => unit.skill === filter.id).length;
                 const active = skillFilter === filter.id;
 
                 return (
@@ -302,6 +340,7 @@ export default function PracticeSessionsView({ units }: { units: PracticeUnit[] 
                     key={filter.id}
                     type="button"
                     onClick={() => setSkillFilter(filter.id)}
+                    aria-pressed={active}
                     className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-all active:scale-[0.98] ${
                       active
                         ? 'border-ink bg-ink text-white'
@@ -320,7 +359,7 @@ export default function PracticeSessionsView({ units }: { units: PracticeUnit[] 
               {filteredUnits.map((unit) => {
                 const tone = SKILL_TONES[unit.skill];
                 const Icon = tone.Icon;
-                const draftSummary = getDraftSummary(draftStatuses[unit.id]);
+                const draftSummary = ready && !unavailable ? getDraftSummary(draftStatuses[unit.id]) : null;
 
                 return (
                   <Link
@@ -335,8 +374,8 @@ export default function PracticeSessionsView({ units }: { units: PracticeUnit[] 
                             <Icon size={14} weight="regular" />
                             {formatMode(unit.mode)}
                           </span>
-                          <span className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${draftSummary.className}`}>
-                            {draftSummary.label}
+                          <span className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${draftSummary?.className ?? 'border-line bg-zinc-50 text-ink-subtle'}`}>
+                            {draftSummary?.label ?? (!ready ? '进度加载中' : '进度不可用')}
                           </span>
                         </div>
                         <h3 className="mt-4 text-xl font-semibold text-ink transition-colors group-hover:text-accent">
@@ -346,7 +385,7 @@ export default function PracticeSessionsView({ units }: { units: PracticeUnit[] 
                         <p className="mt-4 text-xs font-medium text-ink-subtle">
                           {formatSkill(unit.skill)} · {unit.questions.length} questions · {formatMinutes(unit.time_limit_seconds)}
                         </p>
-                        <p className="mt-2 text-xs font-semibold text-accent">{draftSummary.ctaLabel}</p>
+                        <p className="mt-2 text-xs font-semibold text-accent">{draftSummary?.ctaLabel ?? '打开 Session'}</p>
                       </div>
                       <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-zinc-50 text-ink-subtle transition-all group-hover:translate-x-1 group-hover:bg-ink group-hover:text-white">
                         <ArrowRight size={17} weight="bold" />
@@ -359,7 +398,7 @@ export default function PracticeSessionsView({ units }: { units: PracticeUnit[] 
           ) : (
             <EmptySessionState
               title="这个技能暂时没有 Session"
-              description="当前筛选没有本地样例。切换到全部，或之后在 sample / Supabase source 中补充更多 practice units。"
+              description={source === 'cet-trial' ? '本机限定试用中，该技能暂无完成授权与逐项复核的单元；未用样例代替。' : source === 'supabase' ? '当前考试与技能下暂无已发布内容。如果尚未部署四六级内容，请由维护者执行对应迁移与样例导入。' : '当前考试与技能下暂无内置专项。可以切换到本考试的其他技能。'}
             />
           )}
         </motion.section>
@@ -368,6 +407,147 @@ export default function PracticeSessionsView({ units }: { units: PracticeUnit[] 
   );
 }
 
+function AllExamOverview({
+  units,
+  statuses,
+  source,
+  ready,
+  unavailable,
+}: {
+  units: PracticeSessionCatalogUnit[];
+  statuses: Record<string, UnitDraftStatus>;
+  source: PracticeUnitsSource;
+  ready: boolean;
+  unavailable: boolean;
+}) {
+  const [filter, setFilter] = useState<'all' | 'checked' | 'unfinished' | 'review'>('all');
+  const canShowStatus = ready && !unavailable;
+
+  return (
+    <main className="variant-dashboard mx-auto min-h-[100dvh] max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+      <header className="max-w-3xl">
+        <div className="mb-5 flex flex-wrap items-center gap-2">
+          <Link href="/dashboard" className="inline-flex items-center gap-2 rounded-full border border-line bg-white/80 px-3 py-1.5 text-sm font-medium text-ink-muted transition-colors hover:border-accent/25 hover:text-ink">
+            <ArrowLeft size={17} weight="bold" />
+            返回 Dashboard
+          </Link>
+          <Link href={PRACTICE_HISTORY_HREF} className="inline-flex items-center gap-2 rounded-full border border-line bg-white/80 px-3 py-1.5 text-sm font-medium text-ink-muted transition-colors hover:border-accent/25 hover:text-ink">
+            <ChartLineUp size={17} weight="regular" />
+            复盘轨迹
+          </Link>
+        </div>
+        <p className="text-sm font-semibold text-accent">E-Track · Session Library</p>
+        <h1 className="mt-2 text-display text-3xl font-semibold text-ink sm:text-4xl">全考试 Session 概览</h1>
+        <p className="mt-3 text-sm leading-relaxed text-ink-subtle">
+          按四级、六级、雅思查看本浏览器的练习进度。已检查表示当前草稿已提交检查，不代表全部答对或掌握；待复盘是已检查中仍有标记或笔记的部分，不与已检查重复相加。
+        </p>
+        <p className="mt-2 text-sm leading-relaxed text-ink-subtle">
+          内容来源：{source === 'local' ? '内置目录' : source === 'cet-trial' ? '本机限定试用目录（未公开发布）' : 'Supabase 目录'}。未完成包含未开始与进行中；仅有标记或笔记的草稿也计入进行中。重练或清理草稿会改变当前状态，历次提交请查看复盘轨迹。
+        </p>
+        <p role="status" className="mt-3 text-sm text-ink-muted">
+          {!ready ? '正在读取本浏览器的进度…' : unavailable ? '无法读取浏览器存储，进度暂不可用。请检查浏览器存储权限后重新载入。' : '进度已载入，可筛选下方 Session 并直接继续练习。'}
+        </p>
+      </header>
+
+      <div className="mt-8 grid gap-4 md:grid-cols-3">
+        {EXAMS.map((item) => {
+          const examUnits = units.filter((unit) => resolveExam(unit.exam) === item.id);
+          const overview = getPracticeExamOverview(examUnits, statuses);
+          return (
+            <Link
+              key={item.id}
+              href={getExamLibraryHref(item.id)}
+              className="group rounded-2xl border border-line bg-surface p-5 transition-colors hover:border-accent/40 focus-visible:outline-accent"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold tracking-wide text-accent">{item.id.toUpperCase()}</p>
+                  <h2 className="mt-2 text-lg font-semibold text-ink">{item.label}</h2>
+                </div>
+                <ArrowRight size={18} weight="bold" className="text-ink-subtle transition-transform group-hover:translate-x-1" />
+              </div>
+              <p className="mt-4 text-sm text-ink-subtle">共 {overview.total} 个 Session</p>
+              <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3 border-t border-line pt-4">
+                <OverviewMetric label="未开始" value={canShowStatus ? overview.notStarted : null} />
+                <OverviewMetric label="进行中" value={canShowStatus ? overview.inProgress : null} />
+                <OverviewMetric label="已检查" value={canShowStatus ? overview.checked : null} />
+                <OverviewMetric label="其中待复盘" value={canShowStatus ? overview.needsReview : null} />
+              </dl>
+              <p className="mt-4 text-xs font-semibold text-accent">进入该考试练习库</p>
+            </Link>
+          );
+        })}
+      </div>
+
+      <section className="mt-10" aria-labelledby="overview-sessions-heading">
+        <h2 id="overview-sessions-heading" className="text-xl font-semibold text-ink">查看 Session</h2>
+        <div className="mt-4 flex flex-wrap gap-2" aria-label="按练习状态筛选">
+          {([
+            ['all', '全部'], ['unfinished', '未完成'], ['checked', '已检查'], ['review', '待复盘'],
+          ] as const).map(([value, label]) => (
+            <button key={value} type="button" disabled={!canShowStatus} aria-pressed={filter === value}
+              onClick={() => setFilter(value)}
+              className={`rounded-[10px] border px-4 py-2 text-sm font-semibold transition-colors disabled:opacity-50 ${filter === value ? 'border-accent bg-accent text-white' : 'border-line bg-surface text-ink-muted hover:border-accent'}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+        {canShowStatus && EXAMS.map((item) => {
+          const matching = units.filter((unit) => {
+            if (resolveExam(unit.exam) !== item.id) return false;
+            const status = statuses[unit.id];
+            if (filter === 'checked') return status?.showResults;
+            if (filter === 'unfinished') return !status?.showResults;
+            if (filter === 'review') return status?.showResults && (status.flagged > 0 || status.notes > 0);
+            return true;
+          });
+          return (
+            <section key={item.id} className="mt-6">
+              <h3 className="text-base font-semibold text-ink">{item.label} · {matching.length} 个</h3>
+              {matching.length === 0 ? <p className="mt-3 text-sm text-ink-subtle">此考试没有符合当前筛选的 Session。</p> : (
+                <ul className="mt-3 divide-y divide-line rounded-2xl border border-line bg-surface px-4">
+                  {matching.map((unit) => {
+                    const status = statuses[unit.id];
+                    const label = status?.showResults
+                      ? status.flagged > 0 || status.notes > 0 ? '已检查 · 待复盘' : '已检查'
+                      : status && (status.answered > 0 || status.flagged > 0 || status.notes > 0) ? '进行中' : '未开始';
+                    return (
+                      <li key={unit.id}>
+                        <Link href={`/practice/session/${unit.slug}`} className="flex items-center justify-between gap-4 rounded-[10px] py-4 text-ink transition-colors hover:text-accent">
+                          <span className="min-w-0">
+                            <span className="block text-sm font-semibold break-words">{unit.title}</span>
+                            <span className="mt-1 block text-xs text-ink-subtle">{formatSkill(unit.skill)} · {label} · 已答 {status?.answered ?? 0}/{unit.questions.length}</span>
+                          </span>
+                          <ArrowRight size={18} className="shrink-0" />
+                        </Link>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+          );
+        })}
+      </section>
+
+      {units.length === 0 && (
+        <EmptySessionState
+          title="当前没有可用 Session"
+          description={source === 'cet-trial' ? '限定试用暂无已完成授权及逐项复核的单元，未加载其它来源。' : source === 'supabase' ? '远程目录没有返回可练内容，请检查内容部署和读取权限。' : '内置目录暂时为空。'}
+        />
+      )}
+    </main>
+  );
+}
+
+function OverviewMetric({ label, value }: { label: string; value: number | null }) {
+  return (
+    <div>
+      <dt className="text-xs text-ink-subtle">{label}</dt>
+      <dd className="mt-1 text-xl font-semibold tabular-nums text-ink">{value ?? '—'}</dd>
+    </div>
+  );
+}
 function EmptySessionState({ title, description }: { title: string; description: string }) {
   return (
     <div className="mt-4 rounded-[1.5rem] border border-dashed border-line bg-zinc-50 p-6 text-center">

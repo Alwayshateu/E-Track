@@ -6,6 +6,7 @@ import { analyzeWritingResponse, type WritingFeedbackStatus } from '@/lib/practi
 import type { PracticeQuestion } from '@/lib/types';
 import { useFavoriteQuestions } from './useFavoriteQuestions';
 import { countWords, getSpeakingChecklist, isExtendedResponse, labelQuestionType, optionMarker } from './answer-sheet-helpers';
+import { getQuestionAssetUrl } from './material-pane/media';
 
 const MISTAKE_REASONS = [
   { id: 'location', label: '定位错误' },
@@ -256,6 +257,10 @@ export default function AnswerSheet({
         const skipped = state === 'skipped';
         const manualReview = state === 'manual_review';
         const acceptedAnswers = showResults ? getPracticeAcceptedAnswers(question) : [];
+        // Question-level reference image, e.g. the listening map that Q15-20 label.
+        const questionAssetUrl = getQuestionAssetUrl(question);
+        const questionAssetCaption =
+          typeof question.metadata?.assetCaption === 'string' ? question.metadata.assetCaption : null;
         const extendedResponse = isExtendedResponse(question);
         const flagged = flaggedQuestionIds.includes(question.id);
         const reviewNote = reviewNotesByQuestionId[question.id] ?? '';
@@ -324,6 +329,22 @@ export default function AnswerSheet({
               <h2 className="mt-4 text-base font-semibold leading-relaxed text-ink">
                 {question.question_text}
               </h2>
+              {questionAssetUrl && (
+                <figure className="mt-4 overflow-hidden rounded-2xl border border-line bg-white">
+                  {/* Local/signed asset paths bypass the next/image optimizer, matching MaterialPane. */}
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={questionAssetUrl}
+                    alt={questionAssetCaption ?? `Question ${question.question_number} 参考图`}
+                    className="w-full object-contain"
+                  />
+                  {questionAssetCaption && (
+                    <figcaption className="border-t border-line px-4 py-2 text-xs text-ink-subtle">
+                      {questionAssetCaption}
+                    </figcaption>
+                  )}
+                </figure>
+              )}
             </div>
 
             <div className="p-5">

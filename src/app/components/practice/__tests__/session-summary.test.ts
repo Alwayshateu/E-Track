@@ -10,31 +10,45 @@ function makeStatus(overrides: Partial<PracticeSessionDraftStatus>): PracticeSes
 }
 
 function unitWithSkill(skill: PracticeUnit['skill']): PracticeUnit {
-  return { skill } as unknown as PracticeUnit;
+  return { skill, questions: [{}, {}] } as unknown as PracticeUnit;
 }
 
 describe('getSessionFlow', () => {
   it('gives each skill a three-step flow', () => {
-    for (const skill of ['listening', 'writing', 'speaking', 'reading', 'foundation'] as const) {
+    for (const skill of ['listening', 'writing', 'translation', 'speaking', 'reading', 'foundation'] as const) {
       expect(getSessionFlow(unitWithSkill(skill))).toHaveLength(3);
     }
   });
 
   it('opens the listening flow with the audio/transcript step', () => {
-    expect(getSessionFlow(unitWithSkill('listening'))[0]).toBe('查看音频占位与 Transcript');
+    expect(getSessionFlow(unitWithSkill('listening'))[0]).toBe('播放听力材料');
   });
 
   it('opens the writing flow with the prompt step', () => {
-    expect(getSessionFlow(unitWithSkill('writing'))[0]).toBe('阅读 Writing Task prompt');
+    expect(getSessionFlow(unitWithSkill('writing'))[0]).toBe('阅读写作题目');
+  });
+
+  it('uses the translation task and manual review flow', () => {
+    expect(getSessionFlow(unitWithSkill('translation'))).toEqual([
+      '阅读中文材料',
+      '完成英文翻译',
+      '对照参考译文与检查清单复盘',
+    ]);
+  });
+
+  it.each(['listening', 'reading', 'foundation'] as const)('uses the actual question count for %s', (skill) => {
+    const unit = unitWithSkill(skill);
+    expect(getSessionFlow(unit)[1]).toBe('完成 2 道关联题');
+    expect(getSessionFlow({ ...unit, questions: [] })[1]).toBe('完成 0 道关联题');
   });
 
   it('opens the speaking flow with the cue card step', () => {
-    expect(getSessionFlow(unitWithSkill('speaking'))[0]).toBe('阅读 Part 2 cue card');
+    expect(getSessionFlow(unitWithSkill('speaking'))[0]).toBe('阅读口语任务');
   });
 
   it('falls back to the passage flow for reading and anything else', () => {
-    expect(getSessionFlow(unitWithSkill('reading'))[0]).toBe('阅读完整 Passage');
-    expect(getSessionFlow(unitWithSkill('foundation'))[0]).toBe('阅读完整 Passage');
+    expect(getSessionFlow(unitWithSkill('reading'))[0]).toBe('阅读练习材料');
+    expect(getSessionFlow(unitWithSkill('foundation'))[0]).toBe('阅读练习材料');
   });
 });
 
@@ -78,11 +92,11 @@ describe('getDraftSummary', () => {
     expect(summary.label).toBe('草稿 · 3/5 · 1 笔记');
   });
 
-  it('reports flags/notes with no answers as 待复盘', () => {
+  it('reports flags/notes with no answers as an in-progress draft', () => {
     const summary = getDraftSummary(makeStatus({ answered: 0, flagged: 1 }));
-    expect(summary.label).toBe('待复盘 · 1 标记');
-    expect(summary.className).toContain('sky');
-    expect(summary.ctaLabel).toBe('继续复盘');
+    expect(summary.label).toBe('草稿 · 0/5 · 1 标记');
+    expect(summary.className).toContain('amber');
+    expect(summary.ctaLabel).toBe('继续 Session');
   });
 
   it('joins flags and notes into the metadata suffix in order', () => {

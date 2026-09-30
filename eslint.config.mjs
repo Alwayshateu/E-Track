@@ -12,6 +12,19 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Local report/OCR output and browser artifacts, never product source or tests.
+    "writing-output/**",
+    "paper_rewriting_output/**",
+    "public/reports/**",
+    "raw/**",
+    "playwright-report/**",
+    "test-results/**",
+    ".playwright/**",
+    ".cache/**",
+    "edge-profile/**",
+    "edge-*-profile/**",
+    "playwright-profile*/**",
+    "browser-profile*/**",
   ]),
 ]);
 

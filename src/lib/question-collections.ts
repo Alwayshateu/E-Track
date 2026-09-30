@@ -7,6 +7,7 @@ import {
   type CollectionItem,
   type PracticeQuestionJoin,
 } from './collection-items';
+import { getCatalogPracticeUnits } from './practice-catalog';
 import type { IeltsQuestion } from './types';
 
 export type CollectionTable = 'favorites' | 'wrong_book';
@@ -202,9 +203,10 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3
  * Resolve frontend question ids to practice_questions row uuids.
  *
  * With PRACTICE_UNITS_SOURCE=local, question ids are authored slugs like
- * 'green-roofs-q1' — those live in the DB as external_key, not id. With the supabase
- * source they already are row uuids. Ids with no DB row are simply absent from the
- * returned map; callers treat those as "cannot save".
+ * 'green-roofs-q1' — those live in the DB as external_key, not id. Catalog questions
+ * can also have locally authored UUIDs (CET); verify those exist before allowing a save.
+ * Non-catalog UUIDs retain the remote-row passthrough behavior. Missing or unreadable
+ * catalog rows are absent from the map; a UUID shape alone does not mean "seeded".
  */
 export async function resolvePracticeQuestionDbIds(
   supabase: SupabaseClient,
@@ -212,10 +214,31 @@ export async function resolvePracticeQuestionDbIds(
 ): Promise<Map<string, string>> {
   const map = new Map<string, string>();
   const externals: string[] = [];
+  const catalogIds = new Set(
+    getCatalogPracticeUnits().flatMap((unit) => unit.questions.map((question) => question.id))
+  );
+  const localUuids: string[] = [];
 
-  for (const id of questionIds) {
-    if (UUID_PATTERN.test(id)) map.set(id, id);
-    else if (id) externals.push(id);
+  for (const id of new Set(questionIds)) {
+    if (UUID_PATTERN.test(id)) {
+      if (catalogIds.has(id)) localUuids.push(id);
+      else map.set(id, id);
+    } else if (id) externals.push(id);
+  }
+
+  if (localUuids.length > 0) {
+    const { data, error } = await supabase
+      .from('practice_questions')
+      .select('id')
+      .in('id', localUuids);
+
+    if (!error) {
+      for (const row of data ?? []) {
+        if (typeof row.id === 'string' && localUuids.includes(row.id)) {
+          map.set(row.id, row.id);
+        }
+      }
+    }
   }
 
   if (externals.length > 0) {
@@ -234,6 +257,50 @@ export async function resolvePracticeQuestionDbIds(
   }
 
   return map;
+}
+
+/** Save a batch without losing unresolved or failed questions behind a partial success. */
+export async function savePracticeQuestionsToCollection({
+  supabase,
+  table,
+  userId,
+  questionIds,
+}: {
+  supabase: SupabaseClient;
+  table: CollectionTable;
+  userId: string;
+  questionIds: string[];
+}) {
+  const ids = [...new Set(questionIds)];
+  const dbIds = await resolvePracticeQuestionDbIds(supabase, ids);
+  let saved = 0;
+  let unresolved = 0;
+  let failed = 0;
+  let firstError: string | null = null;
+
+  for (const id of ids) {
+    const practiceQuestionId = dbIds.get(id);
+    if (!practiceQuestionId) {
+      unresolved += 1;
+      continue;
+    }
+
+    try {
+      const error = await savePracticeQuestionToCollection({
+        supabase,
+        table,
+        userId,
+        practiceQuestionId,
+      });
+      if (error) throw error;
+      saved += 1;
+    } catch (error) {
+      failed += 1;
+      firstError ??= error instanceof Error ? error.message : '保存失败，请重试。';
+    }
+  }
+
+  return { saved, unresolved, failed, firstError };
 }
 
 /** Which of the given practice questions the user has already saved. */

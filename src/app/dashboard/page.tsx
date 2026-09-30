@@ -3,6 +3,8 @@ import { getDashboardStats } from '@/lib/dashboard-stats';
 import { redirect } from 'next/navigation';
 import AppQuickNav from '../components/AppQuickNav';
 import DashboardContent from '../components/DashboardContent';
+import ProtectedAccountBoundary from '../components/ProtectedAccountBoundary';
+import { getPracticePageCatalog } from '@/lib/practice-page-catalog';
 
 // 防止数据缓存
 export const dynamic = 'force-dynamic';
@@ -38,12 +40,17 @@ export default async function DashboardPage() {
   // 4. 防止 profile 为 null 导致组件报错
   const safeProfile = profile || { email: user.email ?? null, username: null };
 
-  const stats = await getDashboardStats(supabase, user.id);
+  const [stats, { catalog }] = await Promise.all([
+    getDashboardStats(supabase, user.id),
+    getPracticePageCatalog(),
+  ]);
 
   return (
-    <div className="variant-dashboard-shell min-h-[100dvh]">
-      <AppQuickNav />
-      <DashboardContent profile={safeProfile} isAnonymous={isAnonymous} stats={stats} />
-    </div>
+    <ProtectedAccountBoundary key={user.id} userId={user.id}>
+      <div className="variant-dashboard-shell min-h-[100dvh]">
+        <AppQuickNav catalog={catalog} userId={user.id} />
+        <DashboardContent profile={safeProfile} isAnonymous={isAnonymous} stats={stats} catalog={catalog} userId={user.id} />
+      </div>
+    </ProtectedAccountBoundary>
   );
 }

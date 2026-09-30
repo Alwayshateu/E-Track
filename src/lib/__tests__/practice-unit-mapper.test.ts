@@ -49,6 +49,7 @@ function questionRow(overrides: RawPracticeQuestionRow = {}): RawPracticeQuestio
 describe('practice unit mapper', () => {
   it('maps valid rows, nullable fields, and JSONB values', () => {
     expect(mapPracticeUnitRow(unitRow, [questionRow()])).toEqual({
+      exam: 'ielts',
       id: 'unit-1',
       slug: 'reading-progressive-unit-1',
       skill: 'reading',

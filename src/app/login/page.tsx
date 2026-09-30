@@ -1,7 +1,8 @@
 'use client';
 
 import Link from 'next/link';
-import { useState } from 'react';
+import { Suspense, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { createSupabaseBrowserClient } from '@/lib/supabase-browser';
 import { springSnap, staggerParent, riseChild } from '../components/ui/motion-presets';
@@ -18,6 +19,15 @@ import {
 } from '@phosphor-icons/react';
 
 export default function LoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <LoginForm />
+    </Suspense>
+  );
+}
+
+function LoginForm() {
+  const searchParams = useSearchParams();
   const reduceMotion = useReducedMotion();
   const [email, setEmail] = useState('');
   const [loadingEmail, setLoadingEmail] = useState(false);
@@ -25,47 +35,57 @@ export default function LoginPage() {
   const [message, setMessage] = useState<{
     type: 'error' | 'success';
     text: string;
-  } | null>(null);
+  } | null>(() =>
+    searchParams.get('error') === 'auth_callback_failed'
+      ? { type: 'error', text: '登录链接无效或已过期，请重新发送登录链接后再试。' }
+      : null
+  );
 
   const handleEmailLogin = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setLoadingEmail(true);
     setMessage(null);
 
-    const supabase = createSupabaseBrowserClient();
-    const { error } = await supabase.auth.signInWithOtp({
-      email,
-      options: {
-        emailRedirectTo: `${location.origin}/auth/callback`,
-      },
-    });
+    try {
+      const supabase = createSupabaseBrowserClient();
+      const { error } = await supabase.auth.signInWithOtp({
+        email,
+        options: {
+          emailRedirectTo: `${location.origin}/auth/callback`,
+        },
+      });
 
-    if (error) {
-      setMessage({ type: 'error', text: error.message });
-    } else {
-      setMessage({ type: 'success', text: '登录链接已发送，请查收邮箱。' });
+      if (error) {
+        setMessage({ type: 'error', text: '登录链接发送失败，请稍后重试。' });
+      } else {
+        setMessage({ type: 'success', text: '登录链接已发送，请查收邮箱。' });
+      }
+    } catch {
+      setMessage({ type: 'error', text: '暂时无法发送登录链接，请检查网络后重试。' });
+    } finally {
+      setLoadingEmail(false);
     }
-
-    setLoadingEmail(false);
   };
 
   const handleAnonymousLogin = async () => {
     setLoadingAnonymous(true);
     setMessage(null);
 
-    const supabase = createSupabaseBrowserClient();
-    const { error } = await supabase.auth.signInAnonymously();
+    try {
+      const supabase = createSupabaseBrowserClient();
+      const { error } = await supabase.auth.signInAnonymously();
 
-    if (error) {
-      setMessage({
-        type: 'error',
-        text: `匿名测试登录失败：${error.message}`,
-      });
+      if (error) {
+        setMessage({ type: 'error', text: '游客登录失败，请稍后重试。' });
+        return;
+      }
+
+      window.location.href = '/dashboard';
+    } catch {
+      setMessage({ type: 'error', text: '暂时无法登录，请检查网络后重试。' });
+    } finally {
       setLoadingAnonymous(false);
-      return;
     }
-
-    window.location.href = '/dashboard';
   };
 
   return (
@@ -79,7 +99,7 @@ export default function LoginPage() {
           className="glass-1 glass-blur flex h-10 items-center gap-2 rounded-full border border-white/20 px-4 text-sm font-semibold text-[#f8f4f9] transition-all duration-300 hover:-translate-y-0.5 hover:glass-2 active:scale-[0.98]"
         >
           <ArrowLeft size={15} weight="bold" />
-          IELTS Trainer
+          E-Track
         </Link>
         <div className="flex items-center gap-3">
           <span className="hidden font-mono text-xs text-[rgba(248,244,249,0.6)] sm:block">V03.01</span>
@@ -90,7 +110,7 @@ export default function LoginPage() {
         </div>
       </div>
 
-      {/* Corner metadata — IELTS semantics in the reference's technical voice. */}
+      {/* Corner metadata — English learning in the reference's technical voice. */}
       <span className="tech-label absolute left-6 top-20 z-10 sm:left-12 lg:top-24" aria-hidden="true">
         PRACTICE.CORE // ON-LINE
       </span>
@@ -101,10 +121,10 @@ export default function LoginPage() {
         className="tech-label absolute right-12 top-1/2 z-10 hidden -translate-y-1/2 rotate-90 items-center gap-6 lg:flex origin-[center_right]"
         aria-hidden="true"
       >
-        <span>BAND</span>
+        <span>E</span>
         <span>=</span>
-        <span>TARGET</span>
-        <span>-7.0</span>
+        <span>ENGLISH</span>
+        <span>{'// TRACK'}</span>
       </span>
 
       <div className="relative z-10 grid min-h-[100dvh] grid-cols-1 lg:grid-cols-2">
@@ -116,14 +136,14 @@ export default function LoginPage() {
             transition={{ ...springSnap, delay: 0.1 }}
             className="max-w-md"
           >
-            <p className="font-mono text-[11px] tracking-[0.2em] text-[#b08da3]">IELTS.IDENTITY</p>
+            <p className="font-mono text-[11px] tracking-[0.2em] text-[#b08da3]">E-TRACK.IDENTITY</p>
             <h2 className="text-display mt-4 text-4xl font-medium leading-tight text-[#f8f4f9]">
               把薄弱项，
               <br />
               练成确定的答案。
             </h2>
             <p className="mt-4 text-sm leading-relaxed text-[rgba(248,244,249,0.6)]">
-              练习、记录、复盘放进同一个闭环。每天只需要进入下一组最该做的题。
+              E 代表 English。面向大学生的四级、六级与雅思学习，把练习、记录、复盘放进同一个闭环。
             </p>
           </motion.div>
         </div>
@@ -141,7 +161,7 @@ export default function LoginPage() {
                 variants={riseChild}
                 className="glass-2 mb-2 self-start rounded-full px-3 py-1 font-mono text-[11px] leading-[14px] tracking-[0.1em] text-[#f8f4f9]"
               >
-                IELTS.IDENTITY
+                E-TRACK.IDENTITY
               </motion.span>
               <motion.h1 variants={riseChild} className="text-display text-[32px] font-medium leading-[1.1] text-[#f8f4f9]">
                 登录

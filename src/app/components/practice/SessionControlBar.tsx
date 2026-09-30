@@ -29,6 +29,7 @@ type SessionScore = {
 
 export default function SessionControlBar({
   unit,
+  attemptId,
   score,
   showResults,
   elapsedSeconds,
@@ -46,6 +47,7 @@ export default function SessionControlBar({
   onExamExpire,
 }: {
   unit: PracticeUnit;
+  attemptId?: string;
   score: SessionScore;
   showResults: boolean;
   elapsedSeconds: number;
@@ -65,9 +67,11 @@ export default function SessionControlBar({
   const progress = score.total > 0 ? Math.round((score.answered / score.total) * 100) : 0;
   const manualReviewCount = score.manualReview ?? 0;
   const objectiveTotal = score.objectiveTotal ?? score.total;
-  const reviewSummary = manualReviewCount > 0 && objectiveTotal === 0
-    ? `本地复盘：${manualReviewCount}/${score.total} 份回应已进入待反馈状态，正式版本后续会写入 session attempt。`
-    : `本地复盘：${score.correct}/${objectiveTotal} 道客观题命中，正式版本后续会写入 session attempt。`;
+  const reviewSummary = score.total > 0 && objectiveTotal === 0
+    ? `主观任务复盘：已填写 ${score.answered}/${score.total} 份回应，${manualReviewCount} 份待自评；当前不提供自动评分。`
+    : objectiveTotal > 0
+      ? `客观题答对 ${score.correct}/${objectiveTotal}；主观回应不计入客观题正确率。`
+      : '暂无可复盘的题目。';
   const timeLimit = unit.time_limit_seconds;
   const examDeadline = examMode ? examDurationSeconds : typeof timeLimit === 'number' ? timeLimit : null;
   const remainingSeconds = examDeadline === null ? null : Math.max(0, examDeadline - elapsedSeconds);
@@ -87,15 +91,16 @@ export default function SessionControlBar({
   const primaryAction = examMode || showResults || !hasUnanswered ? onReveal : onReviewUnanswered;
 
   useEffect(() => {
-    if (showResults) return;
-    if (remainingSeconds !== null && remainingSeconds <= 0) return;
+    // A unit's suggested duration is advisory outside exam mode. A new attempt or
+    // mode starts a full tick; countdown changes do not recreate the interval.
+    if (showResults || examExpired) return;
 
     const timer = window.setInterval(() => {
       onElapsedChange((current) => current + 1);
     }, 1000);
 
     return () => window.clearInterval(timer);
-  }, [onElapsedChange, remainingSeconds, showResults]);
+  }, [attemptId, examExpired, examMode, onElapsedChange, showResults]);
 
   useEffect(() => {
     if (examMode && examExpired && !showResults) {
@@ -119,19 +124,19 @@ export default function SessionControlBar({
       {autoSubmitted && showResults && (
         <div className="mb-3 flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">
           <WarningCircle size={15} weight="fill" />
-          时间到，已自动交卷。下面是本次限时结果。
+          时间到，已结束本轮作答。是否保存成功请查看上方“本机保存状态”。
         </div>
       )}
       {examMode && !showResults && (
         <div className="mb-3 flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-700">
           <Timer size={15} weight="fill" />
-          限时考试模式：倒计时归零会自动交卷，中途离开或刷新会重置。
+          限时练习模式：倒计时归零会结束作答并尝试保存。刷新或离开会退出限时模式；已保存的草稿仍保留，离页时间不计入练习时长。
         </div>
       )}
 
       <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
         <div className="grid gap-3 sm:grid-cols-3 xl:min-w-[30rem]">
-          <ControlMetric icon={examMode ? Timer : Clock} label={examMode ? '考试剩余' : '剩余时间'} value={timeLabel} tone={timeTone} />
+          <ControlMetric icon={examMode ? Timer : Clock} label={examMode ? '考试剩余' : '建议剩余'} value={timeLabel} tone={timeTone} />
           <ControlMetric icon={ListChecks} label="完成进度" value={`${score.answered}/${score.total}`} tone="default" />
           <ControlMetric icon={flaggedCount > 0 ? Flag : examMode ? Timer : showResults ? Eye : PauseCircle} label={flaggedCount > 0 ? '待回看' : 'Session 状态'} value={flaggedCount > 0 ? `${flaggedCount} flagged` : status} tone={showResults ? 'review' : examMode || flaggedCount > 0 ? 'urgent' : 'default'} />
         </div>
@@ -153,8 +158,8 @@ export default function SessionControlBar({
             {showResults
               ? reviewSummary
               : examMode
-                ? `限时 ${formatClock(examDurationSeconds)}：模拟真实考试节奏，时间用完自动交卷。所有数据仍只留在本地。`
-                : '这是只读预览控制条：计时、进度和检查都只在本地发生。'}
+                ? `限时 ${formatClock(examDurationSeconds)}：按考试节奏练习，时间用完自动交卷。`
+                : '可边答题边查看进度，完成后检查答案并生成复盘。'}
           </p>
         </div>
 

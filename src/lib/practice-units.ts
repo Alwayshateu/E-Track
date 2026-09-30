@@ -6,7 +6,7 @@ import {
   type RawPracticeQuestionRow,
   type RawPracticeUnitRow,
 } from './practice-unit-mapper';
-import { getSamplePracticeUnit, getSamplePracticeUnits } from './practice-session-samples';
+import { getCatalogPracticeUnit, getCatalogPracticeUnits } from './practice-catalog';
 import { createSupabaseServerClient } from './supabase-server';
 import type { PracticeUnit } from './types';
 
@@ -15,9 +15,10 @@ export type PracticeUnitRepository = {
   get: (unitId: string) => Promise<PracticeUnit | null>;
 };
 
-export type PracticeUnitsSource = 'local' | 'supabase';
+export type PracticeUnitsSource = 'local' | 'supabase' | 'cet-trial';
 
 const PRACTICE_UNIT_FIELDS = [
+  'exam',
   'id',
   'slug',
   'skill',
@@ -50,10 +51,10 @@ const PRACTICE_QUESTION_FIELDS = [
 
 export const localPracticeUnitRepository: PracticeUnitRepository = {
   async list() {
-    return getSamplePracticeUnits();
+    return getCatalogPracticeUnits();
   },
   async get(unitId) {
-    return getSamplePracticeUnit(unitId);
+    return getCatalogPracticeUnit(unitId);
   },
 };
 
@@ -150,12 +151,12 @@ export function getPracticeUnitsSource(
   if (!value || value === 'local') {
     return 'local';
   }
-  if (value === 'supabase') {
-    return 'supabase';
+  if (value === 'supabase' || value === 'cet-trial') {
+    return value;
   }
 
   throw new Error(
-    `Unsupported PRACTICE_UNITS_SOURCE value "${value}". Use "local" or "supabase".`
+    `Unsupported PRACTICE_UNITS_SOURCE value "${value}". Use "local", "supabase" or "cet-trial".`
   );
 }
 
@@ -167,8 +168,13 @@ export function createPracticeUnitService(repository: PracticeUnitRepository) {
 }
 
 async function getConfiguredPracticeUnitRepository() {
-  if (getPracticeUnitsSource() === 'local') {
+  const source = getPracticeUnitsSource();
+  if (source === 'local') {
     return localPracticeUnitRepository;
+  }
+  if (source === 'cet-trial') {
+    const { cetTrialPracticeUnitRepository } = await import('./cet-trial-data');
+    return cetTrialPracticeUnitRepository;
   }
 
   const supabase = await createSupabaseServerClient();

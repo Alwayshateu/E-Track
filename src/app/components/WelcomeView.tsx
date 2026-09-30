@@ -237,8 +237,8 @@ export default function WelcomeView() {
           className="b9-home-header flex items-center justify-between gap-4 rounded-full border border-white/60 bg-white/55 px-3 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.8),0_18px_44px_-38px_rgba(24,24,27,0.45)] backdrop-blur-xl"
         >
           <Link href="/" className="flex items-center gap-3 rounded-full pr-3 text-sm font-semibold text-zinc-800 active:scale-[0.98]">
-            <span className="flex h-9 w-9 items-center justify-center rounded-full bg-zinc-950 text-sm font-semibold text-white">雅</span>
-            IELTS Trainer
+            <span className="flex h-9 w-9 items-center justify-center rounded-full bg-zinc-950 text-sm font-semibold text-white">E</span>
+            E-Track
           </Link>
           <nav className="hidden items-center gap-1 rounded-full bg-white/45 p-1 text-sm font-medium text-zinc-600 sm:flex">
             <a href="#loop" className="rounded-full px-4 py-2 transition-colors hover:bg-white hover:text-zinc-950">训练闭环</a>
@@ -259,15 +259,15 @@ export default function WelcomeView() {
                 <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-30" />
                 <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-accent" />
               </span>
-              为一个人的雅思训练室而做
+              E = English · 为大学生的英语学习而做
             </motion.div>
 
             <motion.h1 variants={riseChild} className="text-display max-w-[12ch] text-5xl font-semibold tracking-[-0.032em] text-zinc-950 sm:text-6xl lg:text-7xl">
-              不要再把错题，留给明天的自己。
+              四六级与雅思，陪你走好每一步。
             </motion.h1>
 
             <motion.p variants={riseChild} className="mt-6 max-w-xl text-base leading-8 text-zinc-600 sm:text-lg">
-              IELTS Trainer 把练习、记录和复盘放进同一个闭环。你不用重新整理学习轨迹，只需要每天进入下一组最该做的题。
+              E-Track 把练习、记录和复盘放进同一个闭环。从四级、六级到雅思，选择你的学习方向，为大学生活里的每一次英语进步保驾护航。
             </motion.p>
 
             <motion.div variants={riseChild} className="mt-9 flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -286,6 +286,23 @@ export default function WelcomeView() {
                 先用游客身份看看
               </Link>
             </motion.div>
+
+            <motion.nav variants={riseChild} aria-label="选择考试方向" className="mt-8 flex flex-wrap justify-center gap-3">
+              {[
+                { exam: 'cet4', label: '大学英语四级 · CET-4' },
+                { exam: 'cet6', label: '大学英语六级 · CET-6' },
+                { exam: 'ielts', label: '雅思 · IELTS' },
+              ].map(({ exam, label }) => (
+                <Link
+                  key={exam}
+                  href={`/practice/sessions?exam=${exam}`}
+                  className="inline-flex items-center gap-2 rounded border border-white/20 bg-white/5 px-4 py-3 text-sm font-semibold text-[#f5f5f1] transition-colors hover:border-white/60 hover:bg-white/10 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#c4baff] active:scale-[0.98]"
+                >
+                  {label}
+                  <ArrowRight size={15} weight="bold" />
+                </Link>
+              ))}
+            </motion.nav>
 
             <motion.div variants={riseChild} className="mt-12 grid max-w-xl grid-cols-3 divide-x divide-zinc-300/70 border-y border-zinc-300/70 py-5">
               <div className="pr-4">

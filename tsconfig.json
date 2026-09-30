@@ -30,5 +30,18 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules",
+    "paper_rewriting_output/**",
+    "public/reports/**",
+    "raw/**",
+    "playwright-report/**",
+    "test-results/**",
+    ".playwright/**",
+    ".cache/**",
+    "edge-profile/**",
+    "edge-*-profile/**",
+    "playwright-profile*/**",
+    "browser-profile*/**"
+  ]
 }

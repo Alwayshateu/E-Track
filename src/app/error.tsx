@@ -26,7 +26,7 @@ export default function Error({
         <p className="text-xs font-semibold uppercase tracking-wide text-ink-subtle">出错了</p>
         <h1 className="mt-2 text-xl font-semibold text-tight text-ink">页面暂时无法显示</h1>
         <p className="mt-3 text-sm leading-relaxed text-ink-muted">
-          刚才的操作遇到一点问题。你可以重试，或先回到首页——练习记录都安全保存着。
+          刚才的操作遇到问题。尚未确认保存的输入可能丢失，请先保留仍可复制的文字，再重试或返回首页。已保存的本机记录与账号备份需分别检查；本页无法确认保存结果。
         </p>
         {error.digest ? (
           <p className="mt-4 font-mono text-[11px] text-ink-subtle">错误编号 {error.digest}</p>

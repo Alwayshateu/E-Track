@@ -1,13 +1,18 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import type { PassageAnnotation, PracticeUnit } from '@/lib/types';
-import type { AnnotationSyncStatus } from './usePracticeAnnotationSync';
+import type { usePracticeAnnotationSync } from './usePracticeAnnotationSync';
+import type { RevisionSaveStatus } from './RevisionGoalPanel';
+import AnnotationSyncControls from './AnnotationSyncControls';
 import { formatDifficulty } from '@/lib/question-labels';
+import { resolveExam } from '@/lib/exam-config';
 import { parseTranscriptCues } from '@/lib/practice-listening-cues';
+import { getIeltsWritingGuidance } from '@/lib/practice-writing-guidance';
+import { AnnotationEditDialog } from './material-pane/AnnotationEditDialog';
 import { BookOpenText, Clock, FileText } from '@phosphor-icons/react';
-import { annotationSyncCopy, formatMetadataSeconds, formatMetadataValue, formatMinutes, getMaterialText } from './material-pane/format';
+import { annotationSyncCopy, formatMetadataSeconds, formatMetadataValue, formatMinutes, formatWordRange, getMaterialText } from './material-pane/format';
 import { getUnitAssetUrl } from './material-pane/media';
 import { getSelectionInParagraph, hasOverlap, type PendingSelection } from './material-pane/selection';
 import { getMaterialMeta } from './material-pane/material-meta';
@@ -17,6 +22,21 @@ import { SpeakingRecorder } from './material-pane/SpeakingRecorder';
 import { SpeakingTimerShell } from './material-pane/SpeakingTimerShell';
 import { GuidancePanel } from './material-pane/GuidancePanel';
 import { MetaChip } from './material-pane/MetaChip';
+import SyntheticListeningPlayer from './SyntheticListeningPlayer';
+
+function TranscriptDisclosure({ hidden, collapsed, children }: { hidden: boolean; collapsed: boolean; children: ReactNode }) {
+  if (hidden) {
+    return <p className="mt-5 rounded-xl border border-line bg-zinc-50 p-3 text-xs text-ink-subtle">考试模式下隐藏听力原文及其标注，提交后可查看复盘。</p>;
+  }
+  if (!collapsed) return <>{children}</>;
+  return (
+    <details className="mt-5 rounded-2xl border border-line p-4">
+      <summary className="cursor-pointer text-sm font-semibold text-ink">查看原文与标注 · 文字辅助练习</summary>
+      <p className="my-3 text-xs leading-relaxed text-ink-subtle">展开后可阅读和标注原文。这属于文字辅助练习，不等同于纯听力训练。</p>
+      {children}
+    </details>
+  );
+}
 
 export default function MaterialPane({
   unit,
@@ -26,6 +46,9 @@ export default function MaterialPane({
   onRemoveAnnotation,
   onClearAnnotations,
   annotationSync,
+  annotationsSaveStatus,
+  annotationsReadStatus,
+  examMode = false,
 }: {
   unit: PracticeUnit;
   annotations: PassageAnnotation[];
@@ -33,15 +56,23 @@ export default function MaterialPane({
   onUpdateAnnotation: (annotationId: string, patch: Partial<Pick<PassageAnnotation, 'kind' | 'note'>>) => void;
   onRemoveAnnotation: (annotationId: string) => void;
   onClearAnnotations: () => void;
-  annotationSync?: { enabled: boolean; status: AnnotationSyncStatus; restoredCount: number };
+  annotationSync?: ReturnType<typeof usePracticeAnnotationSync>;
+  annotationsSaveStatus: RevisionSaveStatus;
+  annotationsReadStatus: 'loading' | 'ready' | 'error';
+  examMode?: boolean;
 }) {
+  const isCet = resolveExam(unit.exam) !== 'ielts';
+  const syntheticListening = unit.material_type === 'audio' && unit.metadata?.syntheticSpeech === true;
+  const hideTranscript = unit.material_type === 'audio' && examMode;
   const materialText = getMaterialText(unit);
   const assetUrl = getUnitAssetUrl(unit);
   const paragraphs = useMemo(() => materialText.split('\n\n').filter(Boolean), [materialText]);
   const transcriptCues = useMemo(() => parseTranscriptCues(unit.metadata?.transcriptCues), [unit.metadata?.transcriptCues]);
   const materialMeta = getMaterialMeta(unit);
   const MaterialIcon = materialMeta.Icon;
-  const reduceMotion = useReducedMotion();
+  const writingGuidance = getIeltsWritingGuidance(unit);
+  const annotationFallbackRef = useRef<HTMLHeadingElement>(null);
+  const [editTrigger, setEditTrigger] = useState<HTMLElement | null>(null);
   const [pendingSelection, setPendingSelection] = useState<PendingSelection | null>(null);
   const [noteDraft, setNoteDraft] = useState('');
   const [menuMode, setMenuMode] = useState<'actions' | 'note'>('actions');
@@ -56,6 +87,12 @@ export default function MaterialPane({
   );
   const [timerMode, setTimerMode] = useState<'idle' | 'prep' | 'response'>('idle');
   const editingAnnotation = annotations.find((annotation) => annotation.id === editingAnnotationId) ?? null;
+
+  // Do not reopen an obsolete edit after removal or an exam-mode transition.
+  if (editingAnnotationId && (!editingAnnotation || hideTranscript)) {
+    setEditingAnnotationId(null);
+    setEditDraft('');
+  }
 
   useEffect(() => {
     if (timerMode === 'idle') return;
@@ -96,8 +133,6 @@ export default function MaterialPane({
         setPendingSelection(null);
         setMenuMode('actions');
         setSelectionMessage(null);
-        setEditingAnnotationId(null);
-        setEditDraft('');
       }
     };
 
@@ -121,7 +156,7 @@ export default function MaterialPane({
   }, []);
 
   const openSelectionMenu = (x: number, y: number) => {
-    if (editingAnnotationId) return;
+    if (editingAnnotationId || annotationsReadStatus !== 'ready') return;
 
     const selection = getSelectionInParagraph();
     if (!selection) return;
@@ -177,7 +212,8 @@ export default function MaterialPane({
     setNoteDraft('');
   };
 
-  const startEditingAnnotation = (annotation: PassageAnnotation) => {
+  const startEditingAnnotation = (annotation: PassageAnnotation, trigger?: HTMLElement) => {
+    setEditTrigger(trigger ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null));
     setEditingAnnotationId(annotation.id);
     setEditDraft(annotation.note ?? '');
     setPendingSelection(null);
@@ -206,7 +242,7 @@ export default function MaterialPane({
             <MaterialIcon size={14} weight="regular" />
             {materialMeta.label}
           </span>
-          <h1 className="text-tight mt-5 text-2xl font-semibold">{unit.title}</h1>
+          <h1 ref={annotationFallbackRef} tabIndex={-1} className="text-tight mt-5 text-2xl font-semibold">{unit.title}</h1>
           <p className="mt-3 text-sm leading-relaxed text-white/60">{unit.description}</p>
           <div className="mt-5 grid grid-cols-3 gap-2">
             <MetaChip icon={BookOpenText} label="模式" value={unit.mode === 'progressive' ? 'Progressive' : unit.mode === 'challenge' ? 'Challenge' : 'Basic'} />
@@ -216,10 +252,13 @@ export default function MaterialPane({
           <p className="mt-4 rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2 text-xs leading-relaxed text-white/55">
             选中 {materialMeta.hintTarget} 文字后可以 highlight 或添加 note。当前标注
             {highlightCount + noteCount} 条
-            {annotationSync?.enabled
-              ? annotationSyncCopy(annotationSync)
-              : '，只保存在本机浏览器，不会写入数据库。'}
+            {annotationsReadStatus === 'loading' ? '，正在读取本机标注…'
+              : annotationsReadStatus === 'error' ? '，本机标注读取失败；原有数据不会自动覆盖。'
+              : annotationsSaveStatus.status !== 'saved' ? '，本机改动尚未保存，请保留页面并重试。'
+              : annotationSync?.enabled ? annotationSyncCopy(annotationSync)
+              : '，已保存到本机浏览器，云端同步未启用。'}
           </p>
+          {annotationSync && <AnnotationSyncControls sync={annotationSync} localSaveReady={annotationsReadStatus === 'ready' && annotationsSaveStatus.status === 'saved'} />}
         </div>
 
         <div className="max-h-[68dvh] overflow-y-auto px-5 py-6 sm:px-6" onScroll={() => setPendingSelection(null)}>
@@ -248,10 +287,12 @@ export default function MaterialPane({
               </div>
             </div>
           )}
-          {unit.material_type === 'audio' && (
+          {syntheticListening ? (
+            <SyntheticListeningPlayer transcript={unit.transcript ?? materialText} />
+          ) : unit.material_type === 'audio' && (
             <ListeningAudioPlayer
               audioUrl={unit.audio_url}
-              cues={transcriptCues}
+              cues={hideTranscript ? [] : transcriptCues}
               transcriptParagraphs={paragraphs.length}
               fallbackDurationSeconds={
                 typeof unit.metadata?.audioDurationSeconds === 'number' ? unit.metadata.audioDurationSeconds : null
@@ -262,12 +303,26 @@ export default function MaterialPane({
           {unit.material_type === 'writing_prompt' && (
             <GuidancePanel
               tone="amber"
+              items={isCet ? [
+                { label: '任务', value: '英语短文' },
+                { label: '词数', value: formatWordRange(unit.metadata?.wordRange) },
+                { label: '复核', value: '参考范文 + 清单' },
+              ] : writingGuidance?.items ?? []}
+              description={isCet
+                ? '先确定题目要求、中心观点与例证，再完成短文。提交后对照参考范文和复核清单自评，不生成官方分数。'
+                : writingGuidance?.description ?? '请按各题要求分别作答并人工复核。'}
+            />
+          )}
+
+          {unit.material_type === 'translation_prompt' && (
+            <GuidancePanel
+              tone="amber"
               items={[
-                { label: 'Task', value: formatMetadataValue(unit.metadata?.taskType, 'task_2').replace('_', ' ').toUpperCase() },
-                { label: 'Target', value: `${formatMetadataValue(unit.metadata?.wordTarget, '250')} words` },
-                { label: 'Focus', value: 'position + balance' },
+                { label: '方向', value: '中文 → 英文' },
+                { label: '重点', value: '信息完整 + 表达准确' },
+                { label: '复核', value: '参考译文 + 清单' },
               ]}
-              description="先把 prompt、立场和两边观点拆清楚，再去右侧写完整 response。这里是本地草稿，后续才会接 rubric feedback。"
+              description="先理解中文段落的逻辑，再用自然的英文表达。参考译文不是唯一答案，不进行逐字判分或官方分数估算。"
             />
           )}
 
@@ -304,6 +359,7 @@ export default function MaterialPane({
             </figure>
           )}
 
+          <TranscriptDisclosure hidden={hideTranscript} collapsed={syntheticListening}>
           <div
             className="space-y-5 text-sm leading-7 text-ink-muted"
             onContextMenu={handleContextMenu}
@@ -332,7 +388,9 @@ export default function MaterialPane({
                 <button
                   type="button"
                   onClick={() => {
-                    if (window.confirm('清空本机保存的 Passage 标注？此操作不会影响答案。')) {
+                    if (window.confirm(annotationSync?.enabled
+                      ? '删除这个单元的全部标注？不会影响答案；若此单元已启用同步，删除也会更新云端备份。若只想清本机，请使用“清理本机草稿与标注”。'
+                      : '删除这个单元的全部本机标注？此操作不会影响答案。')) {
                       onClearAnnotations();
                     }
                   }}
@@ -362,7 +420,7 @@ export default function MaterialPane({
                         <div className="flex shrink-0 flex-col gap-1.5">
                           <button
                             type="button"
-                            onClick={() => startEditingAnnotation(annotation)}
+                            onClick={(event) => startEditingAnnotation(annotation, event.currentTarget)}
                             className="rounded-full border border-line px-2 py-1 font-semibold text-ink-subtle transition-all duration-200 hover:-translate-y-0.5 hover:border-accent/30 hover:bg-accent-tint hover:text-accent active:scale-[0.98]"
                           >
                             编辑
@@ -382,76 +440,31 @@ export default function MaterialPane({
               </div>
             </div>
           )}
+          </TranscriptDisclosure>
         </div>
       </div>
 
-      <AnimatePresence>
-        {editingAnnotation && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-20 flex items-end bg-zinc-950/18 px-4 py-6 backdrop-blur-[2px] sm:items-center sm:justify-center"
-            data-annotation-menu
-          >
-            <motion.div
-              initial={{ opacity: 0, y: reduceMotion ? 0 : 18, scale: reduceMotion ? 1 : 0.98 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: reduceMotion ? 0 : 10, scale: reduceMotion ? 1 : 0.98 }}
-              transition={{ duration: reduceMotion ? 0 : 0.18 }}
-              className="w-full max-w-md rounded-2xl border border-line bg-surface p-5 shadow-[0_30px_80px_-40px_rgba(24,24,27,0.42)]"
-            >
-              <p className="text-sm font-semibold text-ink">编辑 {materialMeta.hintTarget} Note</p>
-              <p className="mt-2 line-clamp-3 rounded-2xl bg-zinc-50 px-3 py-2 text-xs leading-relaxed text-ink-subtle">
-                “{editingAnnotation.text}”
-              </p>
-              <label className="mt-4 block">
-                <span className="mb-2 block text-xs font-semibold text-ink">Note 内容</span>
-                <textarea
-                  value={editDraft}
-                  onChange={(event) => setEditDraft(event.target.value)}
-                  rows={4}
-                  autoFocus
-                  placeholder="留空保存会转为普通 highlight"
-                  className="w-full resize-none rounded-2xl border border-line bg-zinc-50 px-3 py-2 text-sm text-ink outline-none transition-all placeholder:text-ink-subtle focus:border-accent focus:bg-surface focus:ring-4 focus:ring-accent/10"
-                />
-              </label>
-              <div className="mt-4 grid grid-cols-3 gap-2">
-                <button
-                  type="button"
-                  onClick={saveEditingAnnotation}
-                  className="rounded-2xl bg-ink px-3 py-2 text-sm font-semibold text-white transition-all duration-200 hover:-translate-y-0.5 hover:bg-zinc-800 active:scale-[0.98]"
-                >
-                  保存
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onUpdateAnnotation(editingAnnotation.id, { kind: 'highlight', note: null });
-                    setEditingAnnotationId(null);
-                    setEditDraft('');
-                  }}
-                  className="rounded-2xl border border-line bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800 transition-all duration-200 hover:-translate-y-0.5 hover:bg-amber-100 active:scale-[0.98]"
-                >
-                  转 Highlight
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditingAnnotationId(null);
-                    setEditDraft('');
-                  }}
-                  className="rounded-2xl border border-line px-3 py-2 text-sm font-semibold text-ink-muted transition-all duration-200 hover:-translate-y-0.5 hover:bg-zinc-50 active:scale-[0.98]"
-                >
-                  取消
-                </button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <AnnotationEditDialog
+        open={!hideTranscript && editingAnnotation !== null}
+        annotation={editingAnnotation}
+        draft={editDraft}
+        onDraftChange={setEditDraft}
+        onSave={saveEditingAnnotation}
+        onConvertToHighlight={() => {
+          if (editingAnnotation) onUpdateAnnotation(editingAnnotation.id, { kind: 'highlight', note: null });
+          setEditingAnnotationId(null);
+          setEditDraft('');
+        }}
+        onCancel={() => {
+          setEditingAnnotationId(null);
+          setEditDraft('');
+        }}
+        triggerElement={editTrigger}
+        isTriggerValid={(id) => !hideTranscript && annotations.some((annotation) => annotation.id === id)}
+        fallbackRef={annotationFallbackRef}
+      />
 
-      {pendingSelection && (
+      {!hideTranscript && pendingSelection && (
         <div
           data-annotation-menu
           className="fixed z-20 w-72 rounded-2xl border border-line bg-surface p-3 shadow-[0_24px_60px_-34px_rgba(24,24,27,0.38)]"

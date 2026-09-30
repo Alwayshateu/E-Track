@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildPracticeAttemptSyncPlans,
+  PRACTICE_ATTEMPT_REVIEW_METADATA_KEY,
   questionLookupKey,
   selectUnsyncedEntries,
   type PracticeUnitLookup,
@@ -9,6 +10,7 @@ import {
 import type {
   PracticeAttemptAnswer,
   PracticeAttemptOutcome,
+  PracticeAttemptReview,
   PracticeSessionHistoryEntry,
 } from '../practice-session-history';
 
@@ -160,6 +162,59 @@ describe('buildPracticeAttemptSyncPlans', () => {
 
     expect(plans[0].answers).toEqual([]);
     expect(plans[0].attempt.metadata).toMatchObject({ hasSnapshot: false });
+  });
+
+  it('copies versioned review and parent-goal metadata only into the create plan', () => {
+    const review: PracticeAttemptReview = {
+      revision: 4, updatedAt: 1_700_000_000_001,
+      flaggedQuestionIds: ['q1'], reviewNotesByQuestionId: { q1: 'Support the point.' },
+      mistakeReasonsByQuestionId: { q1: ['evidence'] },
+      rubricRatingsByQuestionId: { q1: { task: 6, coherence: 7 } },
+      improvementGoal: 'Use evidence', reflection: 'Added an example',
+    };
+    const { plans } = buildPracticeAttemptSyncPlans({
+      entries: [entry({ snapshotVersion: 2, answerCompleteness: 'full', parentAttemptId: 'first-draft', revisionGoal: 'Use evidence', review })],
+      userId: USER_ID, lookup: lookup(),
+    });
+    expect(plans[0].attempt.metadata).toMatchObject({
+      snapshotVersion: 2, answerCompleteness: 'full', parentAttemptId: 'first-draft', revisionGoal: 'Use evidence',
+      [PRACTICE_ATTEMPT_REVIEW_METADATA_KEY]: { version: 1, review },
+    });
+    expect(plans[0].attempt.self_rated_band).toBe(6.5);
+  });
+
+  it.each([
+    {},
+    { snapshotVersion: 2 as const },
+    { answerCompleteness: 'full' as const },
+    { snapshotVersion: 2 as const, answerCompleteness: 'legacy-excerpt' as const },
+  ])('does not infer full answers for legacy or incompletely versioned snapshots (%j)', (overrides) => {
+    const { plans } = buildPracticeAttemptSyncPlans({
+      entries: [entry({ answers: [answer('q1', 1, 'correct')], ...overrides })],
+      userId: USER_ID, lookup: lookup(),
+    });
+    expect(plans[0].attempt.metadata.answerCompleteness).toBe('legacy-excerpt');
+  });
+
+  it('preserves full answer text, leading/trailing whitespace and newlines', () => {
+    const text = `  Intro\n${'long paragraph\n'.repeat(300)}  `;
+    const { plans } = buildPracticeAttemptSyncPlans({
+      entries: [entry({ answers: [answer('q1', 1, 'manual_review', { userAnswer: text })] })],
+      userId: USER_ID, lookup: lookup(),
+    });
+    expect(plans[0].answers[0].user_answer).toBe(text);
+  });
+
+  it('never sends an IELTS Band from CET rubric ratings', () => {
+    const review: PracticeAttemptReview = {
+      revision: 1, updatedAt: 1, flaggedQuestionIds: [], reviewNotesByQuestionId: {},
+      mistakeReasonsByQuestionId: {}, rubricRatingsByQuestionId: { q1: { quality: 7 } },
+      improvementGoal: '', reflection: '',
+    };
+    const { plans } = buildPracticeAttemptSyncPlans({
+      entries: [entry({ exam: 'cet4', review, selfRatedBand: 7 })], userId: USER_ID, lookup: lookup(),
+    });
+    expect(plans[0].attempt.self_rated_band).toBeNull();
   });
 
   it('records unresolved question keys without dropping the attempt', () => {

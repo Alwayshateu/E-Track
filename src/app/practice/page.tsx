@@ -1,7 +1,8 @@
 import { createSupabaseServerClient } from '@/lib/supabase-server'; 
 import { redirect } from 'next/navigation';
-import AppQuickNav from '../components/AppQuickNav';
+import AppQuickNav from '../components/AppQuickNavServer';
 import PracticeView from '../components/PracticeView';
+import ProtectedAccountBoundary from '../components/ProtectedAccountBoundary';
 
 // 强制动态渲染，防止 SSR 缓存问题
 export const dynamic = 'force-dynamic';
@@ -21,9 +22,11 @@ export default async function PracticePage() {
 
   // 4. 渲染客户端组件，传入 userId 用于记录数据
   return (
-    <div className="min-h-[100dvh] bg-canvas pb-10 pt-4">
-      <AppQuickNav />
-      <PracticeView userId={user.id} />
-    </div>
+    <ProtectedAccountBoundary key={user.id} userId={user.id}>
+      <div className="min-h-[100dvh] bg-canvas pb-10 pt-4">
+        <AppQuickNav userId={user.id} />
+        <PracticeView userId={user.id} />
+      </div>
+    </ProtectedAccountBoundary>
   );
 }

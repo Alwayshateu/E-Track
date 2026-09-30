@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { getSamplePracticeUnit, getSamplePracticeUnits } from '../practice-session-samples';
+import { getCatalogPracticeUnit, getCatalogPracticeUnits } from '../practice-catalog';
 import {
   createPracticeUnitService,
   createSupabasePracticeUnitRepository,
@@ -155,22 +155,22 @@ describe('practice unit adapter', () => {
     delete process.env.PRACTICE_UNITS_SOURCE;
 
     expect(getPracticeUnitsSource()).toBe('local');
-    await expect(getPracticeUnits()).resolves.toEqual(getSamplePracticeUnits());
+    await expect(getPracticeUnits()).resolves.toEqual(getCatalogPracticeUnits());
   });
 
   it('uses local sample units when the source is explicitly local', async () => {
     process.env.PRACTICE_UNITS_SOURCE = 'local';
 
-    await expect(getPracticeUnits()).resolves.toEqual(getSamplePracticeUnits());
+    await expect(getPracticeUnits()).resolves.toEqual(getCatalogPracticeUnits());
   });
 
   it('resolves every local sample unit by id and slug', async () => {
     process.env.PRACTICE_UNITS_SOURCE = 'local';
-    const samples = getSamplePracticeUnits();
+    const samples = getCatalogPracticeUnits();
 
     for (const unit of samples) {
-      await expect(getPracticeUnit(unit.id)).resolves.toEqual(getSamplePracticeUnit(unit.id));
-      await expect(getPracticeUnit(unit.slug)).resolves.toEqual(getSamplePracticeUnit(unit.slug));
+      await expect(getPracticeUnit(unit.id)).resolves.toEqual(getCatalogPracticeUnit(unit.id));
+      await expect(getPracticeUnit(unit.slug)).resolves.toEqual(getCatalogPracticeUnit(unit.slug));
     }
   });
 
@@ -180,15 +180,20 @@ describe('practice unit adapter', () => {
     await expect(getPracticeUnit('not-a-real-unit')).resolves.toBeNull();
   });
 
+  it('requires explicit opt-in for the CET trial source', () => {
+    expect(getPracticeUnitsSource('cet-trial')).toBe('cet-trial');
+    expect(getPracticeUnitsSource('local')).toBe('local');
+  });
+
   it('rejects unsupported source values instead of silently falling back', () => {
     expect(() => getPracticeUnitsSource('remote')).toThrow(/Unsupported PRACTICE_UNITS_SOURCE/);
   });
 
   it('delegates through an injected read-only repository', async () => {
-    const units = getSamplePracticeUnits();
+    const units = getCatalogPracticeUnits();
     const repository: PracticeUnitRepository = {
       list: vi.fn().mockResolvedValue(units),
-      get: vi.fn().mockImplementation(async (unitId: string) => getSamplePracticeUnit(unitId)),
+      get: vi.fn().mockImplementation(async (unitId: string) => getCatalogPracticeUnit(unitId)),
     };
     const service = createPracticeUnitService(repository);
 

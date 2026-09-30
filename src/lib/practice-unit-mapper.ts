@@ -1,3 +1,4 @@
+import { EXAMS } from './exam-config';
 import type {
   PracticeAnswerKey,
   PracticeDifficulty,
@@ -18,6 +19,7 @@ const PRACTICE_SKILLS: PracticeSkill[] = [
   'listening',
   'writing',
   'speaking',
+  'translation',
 ];
 const PRACTICE_MODES: PracticeMode[] = ['basic', 'progressive', 'challenge'];
 const PRACTICE_DIFFICULTIES: PracticeDifficulty[] = ['easy', 'medium', 'hard'];
@@ -26,6 +28,7 @@ const PRACTICE_MATERIAL_TYPES: PracticeMaterialType[] = [
   'passage',
   'audio',
   'writing_prompt',
+  'translation_prompt',
   'speaking_prompt',
   'foundation_note',
 ];
@@ -37,6 +40,18 @@ const PRACTICE_QUESTION_TYPES: PracticeQuestionType[] = [
   'writing_task',
   'speaking_response',
 ];
+
+const CET_TASKS = {
+  banked_cloze: { skill: 'reading', material: 'passage', question: 'multiple_choice' },
+  paragraph_matching: { skill: 'reading', material: 'passage', question: 'multiple_choice' },
+  reading_choice: { skill: 'reading', material: 'passage', question: 'multiple_choice' },
+  listening_choice: { skill: 'listening', material: 'audio', question: 'multiple_choice' },
+  essay: { skill: 'writing', material: 'writing_prompt', question: 'writing_task' },
+  translation: { skill: 'translation', material: 'translation_prompt', question: 'writing_task' },
+} as const;
+
+type CetTask = keyof typeof CET_TASKS;
+const CET_TASK_NAMES = Object.keys(CET_TASKS) as CetTask[];
 
 export class PracticeUnitMappingError extends Error {
   constructor(message: string) {
@@ -198,6 +213,127 @@ function mapQuestionRow(row: RawPracticeQuestionRow, expectedUnitId: string): Pr
   };
 }
 
+function validateCetMetadata(metadata: Record<string, unknown>, rowLabel: string) {
+  const task = requireEnum(metadata.cetTask, CET_TASK_NAMES, 'metadata.cetTask', rowLabel);
+  if (metadata.referenceAnswer !== undefined) {
+    requireString(metadata.referenceAnswer, 'metadata.referenceAnswer', rowLabel);
+  }
+  if (metadata.reviewChecklist !== undefined) {
+    requireNonEmptyStrings(metadata.reviewChecklist, 'metadata.reviewChecklist', rowLabel);
+  }
+  if (metadata.wordRange !== undefined) {
+    const range = metadata.wordRange;
+    if (!Array.isArray(range) || range.length !== 2
+      || !range.every((value) => Number.isInteger(value) && value > 0)
+      || range[0] > range[1]) {
+      throw new PracticeUnitMappingError(
+        `${rowLabel}.metadata.wordRange must be two ordered positive integers`
+      );
+    }
+  }
+  if (metadata.allowOptionReuse !== undefined
+    && metadata.allowOptionReuse !== (task === 'paragraph_matching')) {
+    throw new PracticeUnitMappingError(
+      `${rowLabel}.metadata.allowOptionReuse does not match cetTask ${task}`
+    );
+  }
+  if (metadata.groupId !== undefined) {
+    requireString(metadata.groupId, 'metadata.groupId', rowLabel);
+  }
+  if (metadata.syntheticSpeech !== undefined && typeof metadata.syntheticSpeech !== 'boolean') {
+    throw new PracticeUnitMappingError(`${rowLabel}.metadata.syntheticSpeech must be a boolean`);
+  }
+  if (metadata.syntheticSpeech === true && task !== 'listening_choice') {
+    throw new PracticeUnitMappingError(`${rowLabel}.metadata.syntheticSpeech requires listening_choice`);
+  }
+  if (metadata.speechLanguage !== undefined) {
+    requireString(metadata.speechLanguage, 'metadata.speechLanguage', rowLabel);
+  }
+  return task;
+}
+
+function requireNonEmptyStrings(value: unknown, field: string, rowLabel: string): string[] {
+  const strings = normalizeStringArray(value, field, rowLabel);
+  if (strings.length === 0 || strings.some((item) => !item.trim())) {
+    throw new PracticeUnitMappingError(`${rowLabel}.${field} must contain non-empty strings`);
+  }
+  return strings;
+}
+
+function requireCetOptions(value: unknown, field: string, rowLabel: string) {
+  const options = requireNonEmptyStrings(value, field, rowLabel);
+  if (options.length < 2 || new Set(options.map((option) => option.trim())).size !== options.length) {
+    throw new PracticeUnitMappingError(`${rowLabel}.${field} must contain at least two distinct options`);
+  }
+  return options;
+}
+
+function validateCetUnit(unit: PracticeUnit, rowLabel: string) {
+  // IELTS historically accepts arbitrary metadata. Only opt CET content into this contract.
+  const metadata = unit.metadata ?? {};
+  const task = validateCetMetadata(metadata, rowLabel);
+  const expected = CET_TASKS[task];
+  if (unit.skill !== expected.skill || unit.material_type !== expected.material) {
+    throw new PracticeUnitMappingError(
+      `${rowLabel}.skill/material_type does not match cetTask ${task}`
+    );
+  }
+  if (unit.questions.length === 0) {
+    throw new PracticeUnitMappingError(`${rowLabel} must contain CET questions`);
+  }
+  if (task === 'listening_choice') {
+    if (metadata.syntheticSpeech === true) {
+      requireString(unit.transcript, 'transcript', rowLabel);
+    } else {
+      requireString(unit.audio_url, 'audio_url', rowLabel);
+    }
+  } else {
+    requireString(unit.passage_text, 'passage_text', rowLabel);
+  }
+
+  const shared = task === 'banked_cloze' || task === 'paragraph_matching';
+  const sharedOptions = shared || metadata.options !== undefined
+    ? requireCetOptions(metadata.options, 'metadata.options', rowLabel)
+    : null;
+
+  for (const question of unit.questions) {
+    const questionLabel = `practice_question:${question.id}`;
+    const questionMetadata = question.metadata ?? {};
+    const questionTask = validateCetMetadata(questionMetadata, questionLabel);
+    if (questionTask !== task || question.question_type !== expected.question) {
+      throw new PracticeUnitMappingError(
+        `${questionLabel}.metadata.cetTask/question_type does not match parent cetTask ${task}`
+      );
+    }
+    if (metadata.wordRange !== undefined && questionMetadata.wordRange !== undefined
+      && (metadata.wordRange as number[]).some(
+        (value, index) => value !== (questionMetadata.wordRange as number[])[index]
+      )) {
+      throw new PracticeUnitMappingError(`${questionLabel}.metadata.wordRange does not match parent unit`);
+    }
+    const accepted = [...question.answer_key.answers, ...(question.answer_key.acceptedAlternatives ?? [])];
+    if (expected.question === 'writing_task') {
+      if (accepted.length !== 0) {
+        throw new PracticeUnitMappingError(`${questionLabel}.answer_key must be empty for manual review`);
+      }
+      if (question.options !== null && question.options.length !== 0) {
+        throw new PracticeUnitMappingError(`${questionLabel}.options must be empty for manual review`);
+      }
+      requireString(questionMetadata.referenceAnswer, 'metadata.referenceAnswer', questionLabel);
+      requireNonEmptyStrings(questionMetadata.reviewChecklist, 'metadata.reviewChecklist', questionLabel);
+    } else {
+      const options = requireCetOptions(question.options, 'options', questionLabel);
+      if (question.answer_key.answers.length !== 1 || accepted.some((answer) => !options.includes(answer))) {
+        throw new PracticeUnitMappingError(`${questionLabel}.answer_key must select a valid option`);
+      }
+      if (shared && sharedOptions && (options.length !== sharedOptions.length
+        || options.some((option, index) => option !== sharedOptions[index]))) {
+        throw new PracticeUnitMappingError(`${questionLabel}.options must match the shared metadata.options`);
+      }
+    }
+  }
+}
+
 export function mapPracticeUnitRow(
   row: RawPracticeUnitRow,
   questionRows: RawPracticeQuestionRow[]
@@ -228,7 +364,10 @@ export function mapPracticeUnitRow(
     seenIds.add(question.id);
   }
 
-  return {
+  const unit: PracticeUnit = {
+    exam: row.exam === null || row.exam === undefined
+      ? 'ielts'
+      : requireEnum(row.exam, EXAMS.map((exam) => exam.id), 'exam', rowLabel),
     id,
     slug: requireString(row.slug, 'slug', rowLabel),
     skill: requireEnum(row.skill, PRACTICE_SKILLS, 'skill', rowLabel),
@@ -255,6 +394,8 @@ export function mapPracticeUnitRow(
     metadata: normalizeMetadata(row.metadata),
     questions,
   };
+  if (unit.exam !== 'ielts') validateCetUnit(unit, rowLabel);
+  return unit;
 }
 
 export function mapPracticeUnitRows(

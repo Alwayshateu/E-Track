@@ -2,9 +2,9 @@
  * Local, non-scoring analysis for IELTS Writing responses.
  *
  * This powers the real-time Writing feedback panel in the Practice Session
- * preview. It only reports structural signals (word count vs target, sentence /
- * paragraph counts, over-long sentences, and heuristic structure checks). It is
- * NOT an automatic band score and never writes anything to the database.
+ * preview. It only reports observable structural signals (word count vs target,
+ * sentence / paragraph counts, and over-long sentences). It is NOT an automatic
+ * band score and never writes anything to the database.
  */
 
 export const DEFAULT_WRITING_WORD_TARGET = 250;
@@ -53,31 +53,31 @@ export function countWritingParagraphs(value: string): number {
 
 export function resolveWordTarget(target: unknown): number {
   return typeof target === 'number' && Number.isFinite(target) && target > 0
-    ? Math.round(target)
+    ? Math.max(1, Math.round(target))
     : DEFAULT_WRITING_WORD_TARGET;
 }
 
-function buildWritingChecklist(answer: string, wordCount: number, wordTarget: number): WritingChecklistItem[] {
+function buildWritingChecklist(wordCount: number, wordTarget: number, sentenceCount: number, paragraphCount: number, longSentenceCount: number): WritingChecklistItem[] {
   return [
     {
-      id: 'position',
-      label: 'Clear position',
-      done: /\b(i believe|i think|in my opinion|overall|therefore)\b/i.test(answer),
-    },
-    {
-      id: 'bothViews',
-      label: 'Both views addressed',
-      done: /\b(on the one hand|on one hand|however|although|while|whereas|others? think)\b/i.test(answer),
+      id: 'input',
+      label: 'Response contains text',
+      done: wordCount > 0,
     },
     {
       id: 'wordTarget',
-      label: `Word target ${wordTarget}+`,
+      label: `Word count ${wordTarget}+`,
       done: wordCount >= wordTarget,
     },
     {
-      id: 'conclusion',
-      label: 'Conclusion / final judgement',
-      done: /\b(in conclusion|to conclude|overall)\b/i.test(answer),
+      id: 'paragraphs',
+      label: 'Paragraph breaks present',
+      done: paragraphCount >= 2,
+    },
+    {
+      id: 'longSentences',
+      label: `No sentences over ${LONG_SENTENCE_WORD_THRESHOLD} words`,
+      done: wordCount > 0 && sentenceCount > 0 && longSentenceCount === 0,
     },
   ];
 }
@@ -103,7 +103,7 @@ export function analyzeWritingResponse(answer: string, target?: unknown): Writin
           ? 'near'
           : 'under';
 
-  const checklist = buildWritingChecklist(answer, wordCount, wordTarget);
+  const checklist = buildWritingChecklist(wordCount, wordTarget, sentenceCount, paragraphCount, longSentenceCount);
 
   return {
     wordCount,

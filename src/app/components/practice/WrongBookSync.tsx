@@ -5,8 +5,7 @@ import Link from 'next/link';
 import { ArrowRight, CheckCircle, ClipboardText, WarningCircle } from '@phosphor-icons/react';
 import {
   isPracticeCollectionLinkEnabled,
-  resolvePracticeQuestionDbIds,
-  savePracticeQuestionToCollection,
+  savePracticeQuestionsToCollection,
 } from '@/lib/question-collections';
 import { createSupabaseBrowserClient } from '@/lib/supabase-browser';
 import type { PracticeReviewQueueItem } from '@/lib/practice-session-report';
@@ -15,6 +14,7 @@ type SyncState =
   | { status: 'idle' }
   | { status: 'saving' }
   | { status: 'done'; saved: number }
+  | { status: 'partial'; saved: number; unresolved: number; failed: number }
   | { status: 'error'; message: string };
 
 /**
@@ -37,55 +37,39 @@ export default function WrongBookSync({ queue }: { queue: PracticeReviewQueueIte
   const handleSave = async () => {
     setState({ status: 'saving' });
 
-    const supabase = createSupabaseBrowserClient();
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
+    try {
+      const supabase = createSupabaseBrowserClient();
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser();
 
-    if (userError || !user) {
-      setState({ status: 'error', message: '登录状态已失效，请重新登录后再试。' });
-      return;
-    }
-
-    // Local question ids are authored slugs; the DB column wants practice_questions
-    // row uuids, so resolve through external_key first.
-    const dbIdByLocalId = await resolvePracticeQuestionDbIds(
-      supabase,
-      missed.map((item) => item.question.id)
-    );
-
-    let saved = 0;
-    let unresolved = 0;
-    const failures: string[] = [];
-
-    for (const item of missed) {
-      const practiceQuestionId = dbIdByLocalId.get(item.question.id);
-      if (!practiceQuestionId) {
-        unresolved += 1;
-        continue;
+      if (userError || !user) {
+        setState({ status: 'error', message: '登录状态已失效，请重新登录后再试。' });
+        return;
       }
 
-      const error = await savePracticeQuestionToCollection({
+      const { saved, unresolved, failed, firstError } = await savePracticeQuestionsToCollection({
         supabase,
         table: 'wrong_book',
         userId: user.id,
-        practiceQuestionId,
+        questionIds: missed.map((item) => item.question.id),
       });
 
-      if (error) failures.push(error.message);
-      else saved += 1;
-    }
+      if (unresolved > 0 || failed > 0) {
+        setState(saved > 0
+          ? { status: 'partial', saved, unresolved, failed }
+          : {
+              status: 'error',
+              message: firstError ?? '这些题目尚未同步到云端题库或暂时无法读取，暂时无法保存。',
+            });
+        return;
+      }
 
-    if (saved === 0 && (failures.length > 0 || unresolved > 0)) {
-      setState({
-        status: 'error',
-        message: failures[0] ?? '这些题目还没同步到云端题库，暂时无法保存。',
-      });
-      return;
+      setState({ status: 'done', saved });
+    } catch {
+      setState({ status: 'error', message: '保存未完成，请检查网络后重试。' });
     }
-
-    setState({ status: 'done', saved });
   };
 
   return (
@@ -120,7 +104,7 @@ export default function WrongBookSync({ queue }: { queue: PracticeReviewQueueIte
             disabled={state.status === 'saving'}
             className="shrink-0 rounded-full bg-white px-4 py-2 text-xs font-semibold text-ink transition-colors hover:bg-white/90 active:scale-[0.98] disabled:opacity-60"
           >
-            {state.status === 'saving' ? '保存中…' : '存入错题本'}
+            {state.status === 'saving' ? '保存中…' : state.status === 'partial' ? '重试未保存题目' : '存入错题本'}
           </button>
         )}
       </div>
@@ -129,6 +113,15 @@ export default function WrongBookSync({ queue }: { queue: PracticeReviewQueueIte
         <p className="mt-3 flex items-center gap-1.5 text-xs text-emerald-300">
           <CheckCircle size={13} weight="fill" />
           已存入 {state.saved} 道题
+        </p>
+      )}
+
+      {state.status === 'partial' && (
+        <p role="status" className="mt-3 text-xs leading-relaxed text-amber-300">
+          已存入 {state.saved} 道题；另有 {state.unresolved + state.failed} 道未保存。
+          {state.unresolved > 0 && `其中 ${state.unresolved} 道尚未同步到云端题库或暂时无法读取。`}
+          {state.failed > 0 && `其中 ${state.failed} 道保存失败，请重试。`}
+          <Link href="/wrong-book" className="ml-2 underline underline-offset-2">查看错题本</Link>
         </p>
       )}
 

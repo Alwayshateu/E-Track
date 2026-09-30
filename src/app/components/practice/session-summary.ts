@@ -2,20 +2,24 @@ import type { PracticeSessionDraftStatus } from '@/lib/practice-session-draft';
 import type { PracticeRecommendationReason } from '@/lib/practice-session-recommendations';
 import type { PracticeUnit } from '@/lib/types';
 
-export function getSessionFlow(unit: PracticeUnit) {
+export function getSessionFlow(unit: Pick<PracticeUnit, 'skill'> & { questions: { id: string }[] }) {
   if (unit.skill === 'listening') {
-    return ['查看音频占位与 Transcript', '完成 5 道关联题', '本地检查并进入 Review Mode'];
+    return ['播放听力材料', `完成 ${unit.questions.length} 道关联题`, '检查答案并对照听力原文复盘'];
   }
 
   if (unit.skill === 'writing') {
-    return ['阅读 Writing Task prompt', '完成本地长文草稿', '进入人工 / AI 反馈占位'];
+    return ['阅读写作题目', '完成写作草稿', '对照参考内容进行人工复盘'];
+  }
+
+  if (unit.skill === 'translation') {
+    return ['阅读中文材料', '完成英文翻译', '对照参考译文与检查清单复盘'];
   }
 
   if (unit.skill === 'speaking') {
-    return ['阅读 Part 2 cue card', '记录回答要点或自评', '进入录音 / 转写占位'];
+    return ['阅读口语任务', '准备要点并练习表达', '回听录音或记录自评'];
   }
 
-  return ['阅读完整 Passage', '完成 5 道关联题', '本地检查并进入 Review Mode'];
+  return ['阅读练习材料', `完成 ${unit.questions.length} 道关联题`, '检查答案并记录复盘笔记'];
 }
 
 export function getDraftSummary(status: PracticeSessionDraftStatus | undefined) {
@@ -54,10 +58,10 @@ export function getDraftSummary(status: PracticeSessionDraftStatus | undefined) 
 
   if (status.flagged > 0 || status.notes > 0) {
     return {
-      label: `待复盘${metadataText}`,
-      className: 'border-sky-200 bg-sky-50 text-sky-700',
+      label: `草稿 · ${status.answered}/${status.total}${metadataText}`,
+      className: 'border-amber-200 bg-amber-50 text-amber-700',
       hasDraft: true,
-      ctaLabel: '继续复盘',
+      ctaLabel: '继续 Session',
     };
   }
 

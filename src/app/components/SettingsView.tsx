@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   ArrowLeft,
@@ -15,13 +15,15 @@ import {
 } from '@phosphor-icons/react';
 import { createSupabaseBrowserClient } from '@/lib/supabase-browser';
 import {
-  clearPracticeSessionAnnotations,
-  clearPracticeSessionDraft,
-  loadPracticeSessionAnnotations,
-  readPracticeSessionDraftStatuses,
+  clearPracticeSessionDraftSafely,
+  getPracticeSessionAnnotationsStorageKey,
+  loadPracticeSessionAnnotationsResult,
 } from '@/lib/practice-session-draft';
 import { getPracticeLearningSummary } from '@/lib/practice-session-recommendations';
-import { getSamplePracticeUnits } from '@/lib/practice-session-samples';
+import type { PracticeCatalogSnapshot, PracticeCatalogUnit } from '@/lib/practice-catalog-types';
+import { PRACTICE_STORAGE_EVENT, type PracticeStorageChange } from '@/lib/practice-storage';
+import { pauseAndClearLocalAnnotations } from '@/lib/practice-annotation-control';
+import { usePracticeCatalog } from './practice/usePracticeCatalog';
 import { riseChild, springSnap, staggerParent } from './ui/motion-presets';
 
 type SettingsProfile = {
@@ -32,33 +34,95 @@ type SettingsProfile = {
 };
 
 type SettingsViewProps = {
+  catalog: PracticeCatalogSnapshot;
   userId: string;
   isAnonymous: boolean;
   authEmail: string | null;
   initialProfile: SettingsProfile | null;
 };
 
-type LocalSessionDataSummary = {
-  sessionsWithData: number;
-  inProgress: number;
-  needsReview: number;
-  checked: number;
-  annotations: number;
-};
-
-function readLocalSessionDataSummary(): LocalSessionDataSummary {
-  const units = getSamplePracticeUnits();
-  const statuses = readPracticeSessionDraftStatuses(units);
-  const learning = getPracticeLearningSummary(statuses);
-  const annotations = units.reduce(
-    (total, unit) => total + loadPracticeSessionAnnotations(unit.id).length,
-    0
-  );
-
+function useLocalAnnotations(units: PracticeCatalogUnit[], userId: string, enabled: boolean) {
+  const [snapshot, setSnapshot] = useState<{
+    units: PracticeCatalogUnit[]; userId: string; counts: Record<string, number>; errors: Record<string, string>;
+  } | null>(null);
+  const refreshRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    if (!enabled) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let all = false;
+    const pending = new Set<string>();
+    const keys = new Map(units.map((unit) => [getPracticeSessionAnnotationsStorageKey(unit.id, userId), unit.id]));
+    const ids = new Set(units.map((unit) => unit.id));
+    let counts: Record<string, number> = {};
+    let errors: Record<string, string> = {};
+    const schedule = (unitId?: string) => {
+      if (unitId) pending.add(unitId);
+      else all = true;
+      if (timer !== undefined) return;
+      timer = setTimeout(() => {
+        timer = undefined;
+        if (!active) return;
+        const selected = all ? [...ids] : [...pending];
+        all = false;
+        pending.clear();
+        counts = { ...counts }; errors = { ...errors };
+        for (const id of selected) {
+          const result = loadPracticeSessionAnnotationsResult(id, userId);
+          delete counts[id]; delete errors[id];
+          if (result.ok) counts[id] = result.value.length;
+          else if (result.reason !== 'missing') errors[id] = result.error;
+        }
+        setSnapshot({ units, userId, counts, errors });
+      }, 0);
+    };
+    const refresh = () => schedule();
+    const onStorage = (event: StorageEvent) => {
+      try {
+        if (event.storageArea && event.storageArea !== window.localStorage) return;
+      } catch {
+        refresh();
+        return;
+      }
+      if (event.key === null) refresh();
+      else { const id = keys.get(event.key); if (id) schedule(id); }
+    };
+    const onChange = (event: Event) => {
+      const change = (event as CustomEvent<PracticeStorageChange>).detail;
+      if (change?.kind !== 'annotations' && change?.kind !== 'annotation-control') return;
+      if (change.userId !== userId) return;
+      if (!change.unitId) refresh();
+      else if (ids.has(change.unitId)) schedule(change.unitId);
+    };
+    const onVisible = () => { if (document.visibilityState === 'visible') refresh(); };
+    refreshRef.current = refresh;
+    refresh();
+    const canListen = typeof window.addEventListener === 'function';
+    const canListenDocument = typeof document.addEventListener === 'function';
+    if (canListen) {
+      window.addEventListener('focus', refresh);
+      window.addEventListener('storage', onStorage);
+      window.addEventListener(PRACTICE_STORAGE_EVENT, onChange);
+    }
+    if (canListenDocument) document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      active = false;
+      if (timer !== undefined) clearTimeout(timer);
+      refreshRef.current = () => {};
+      if (canListen) {
+        window.removeEventListener('focus', refresh);
+        window.removeEventListener('storage', onStorage);
+        window.removeEventListener(PRACTICE_STORAGE_EVENT, onChange);
+      }
+      if (canListenDocument) document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [enabled, units, userId]);
+  const current = enabled && snapshot?.units === units && snapshot.userId === userId ? snapshot : null;
   return {
-    sessionsWithData: Object.keys(statuses).length,
-    ...learning,
-    annotations,
+    ready: current !== null,
+    count: Object.values(current?.counts ?? {}).reduce((total, count) => total + count, 0),
+    unavailable: Object.keys(current?.errors ?? {}).length > 0,
+    refresh: () => refreshRef.current(),
   };
 }
 
@@ -75,6 +139,7 @@ function formatJoinedAt(value: string | null | undefined) {
 }
 
 export default function SettingsView({
+  catalog,
   userId,
   isAnonymous,
   authEmail,
@@ -85,75 +150,88 @@ export default function SettingsView({
   const [saving, setSaving] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [clearingSessionData, setClearingSessionData] = useState(false);
-  const [localSessionData, setLocalSessionData] = useState(readLocalSessionDataSummary);
+  const drafts = usePracticeCatalog(catalog, userId);
+  const annotations = useLocalAnnotations(catalog.units, userId, catalog.status === 'ready');
+  const localReady = drafts.ready && (catalog.status === 'unavailable' || annotations.ready);
+  const localUnavailable = drafts.unavailable || annotations.unavailable;
+  const localSessionData = {
+    sessionsWithData: Object.keys(drafts.statuses).length,
+    ...getPracticeLearningSummary(drafts.statuses),
+    annotations: annotations.count,
+  };
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [activeSection, setActiveSection] = useState<'profile' | 'session' | 'roadmap'>('profile');
 
   const displayEmail = initialProfile?.email || authEmail || '游客测试账号';
-  const joinedAt = useMemo(() => formatJoinedAt(initialProfile?.created_at), [initialProfile?.created_at]);
+  const joinedAt = useMemo(() => localReady ? formatJoinedAt(initialProfile?.created_at) : '加载中…', [initialProfile?.created_at, localReady]);
 
   const handleSave = async () => {
     setSaving(true);
     setMessage(null);
 
-    const supabase = createSupabaseBrowserClient();
-    const { error } = await supabase
-      .from('profiles')
-      .update({ username: username.trim() || null })
-      .eq('id', userId);
-
-    if (error) {
-      console.error('Profile update failed:', error);
-      setMessage({ type: 'error', text: '保存失败，请稍后重试。' });
-    } else {
+    try {
+      const supabase = createSupabaseBrowserClient();
+      const { error } = await supabase.from('profiles').update({ username: username.trim() || null }).eq('id', userId);
+      if (error) throw error;
       setMessage({ type: 'success', text: '设置已保存。' });
       router.refresh();
+    } catch (error) {
+      console.error('Profile update failed:', error);
+      setMessage({ type: 'error', text: '保存失败，请稍后重试。当前输入仍保留。' });
+    } finally {
+      setSaving(false);
     }
-
-    setSaving(false);
   };
 
-  const handleClearSessionData = () => {
-    if (
-      !window.confirm(
-        '清空所有本地 Session 答案、标记、错因、rubric 自评和材料标注？此操作不会删除 Supabase 数据。'
-      )
-    ) {
+  const handleClearSessionData = async () => {
+    if (catalog.status !== 'ready') return;
+    if (!window.confirm('清理当前账号在本浏览器的当前目录 Session 草稿与材料标注？将先暂停这些单元的标注恢复/推送。历史记录、旧版未归属数据、云端备份、其它来源草稿、收藏和错题本均保留。')) {
+      setMessage({ type: 'success', text: '已取消清理；本机与云端数据均未改动。' });
       return;
     }
-
     setClearingSessionData(true);
     setMessage(null);
-
-    const units = getSamplePracticeUnits();
-    const results = units.map((unit) => {
-      const draftCleared = clearPracticeSessionDraft(unit.id);
-      const annotationsCleared = clearPracticeSessionAnnotations(unit.id);
-      return draftCleared && annotationsCleared;
-    });
-    const cleared = results.every(Boolean);
-
-    setLocalSessionData(readLocalSessionDataSummary());
-    setMessage(
-      cleared
-        ? { type: 'success', text: '所有本地 Session 数据已清空。Supabase 数据未受影响。' }
-        : { type: 'error', text: '部分本地 Session 数据未能清空，请检查浏览器存储权限。' }
-    );
-    setClearingSessionData(false);
+    let failed = 0;
+    try {
+      for (const unit of catalog.units) {
+        try {
+          const annotationResult = await pauseAndClearLocalAnnotations(unit.id, () => true, userId);
+          // Each helper owns its short storage transaction; never nest their locks.
+          const draftResult = await clearPracticeSessionDraftSafely(unit.id, unit.questions, () => true, userId);
+          if (!annotationResult.ok || !draftResult.ok) failed += 1;
+        } catch {
+          failed += 1;
+        }
+      }
+      setMessage(failed > 0
+        ? { type: 'error', text: `${failed} 个单元未能完整清理；已完成的清理不会回退。请检查浏览器存储权限及 Web Locks 支持后重试。历史与云端数据未删除。` }
+        : { type: 'success', text: '当前账号的目录草稿与本机标注已清理，标注同步已暂停。历史记录、旧版未归属数据、其它来源草稿和云端备份均保留。' });
+    } finally {
+      drafts.refresh();
+      annotations.refresh();
+      setClearingSessionData(false);
+    }
   };
 
   const handleLogout = async () => {
     setSigningOut(true);
-    const supabase = createSupabaseBrowserClient();
-    await supabase.auth.signOut();
-    router.replace('/login');
-    router.refresh();
+    setMessage(null);
+    try {
+      const supabase = createSupabaseBrowserClient();
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
+      router.replace('/login');
+      router.refresh();
+    } catch {
+      setMessage({ type: 'error', text: '退出失败，仍留在当前页面。请检查网络后重试；本机数据未因退出而清除。' });
+      setSigningOut(false);
+    }
   };
 
   return (
     <main className="variant-settings relative min-h-[100dvh] w-full px-4 py-8 sm:px-6 lg:px-8">
       <span className="tech-label pointer-events-none absolute left-6 top-20 z-10 sm:left-12 lg:top-24" aria-hidden="true">
-        ACCOUNT.CORE // SYNCED
+        ACCOUNT.CORE // SETTINGS
       </span>
       <span className="tech-label pointer-events-none absolute bottom-6 left-6 z-10 sm:left-12" aria-hidden="true">
         PROFILE.DATA // LOCAL_SESSION
@@ -318,15 +396,17 @@ export default function SettingsView({
                 <h2 className="text-sm font-semibold text-ink-subtle">本地 Session 数据</h2>
             <div className="mt-4 rounded-[1.5rem] border border-line bg-surface p-5 shadow-[0_14px_40px_-32px_rgba(45,27,51,0.24)]">
               <p className="text-sm leading-relaxed text-ink-subtle">
-                Session 答案、标记、错因、rubric 自评和材料标注保存在本浏览器的 localStorage。清理只影响当前浏览器，不会删除账号、历史记录、收藏、错题本或 Supabase 数据。
+                当前内容目录的 Session 答案、标记、笔记、错因、自评和材料标注保存在本浏览器。清理仅处理当前目录的真实单元 ID，不会删除历史记录、其它内容来源的旧草稿、账号、收藏、错题本或云端备份。清标注会先持久化暂停同步，避免自动恢复或上传空集。
               </p>
+              <p className="mt-3 text-xs leading-relaxed text-ink-subtle">新草稿、标注和历史按账号在本浏览器隔离；旧版未归属数据原样保留，但不会自动显示、认领或上传。退出或切换账号不会自动清除本机数据。录音仅在当前页面内临时保留，不属于这里的草稿/历史备份。</p>
+              <p role="status" className="mt-3 text-sm text-ink-muted">{!localReady ? '正在读取当前目录的本机数据…' : localUnavailable ? '目录或本机存储暂不可用，或存在损坏数据；不能确认为空。请检查权限后刷新重试。' : '当前目录本机数据已读取。'}</p>
 
               <div className="mt-5 grid grid-cols-2 gap-px overflow-hidden rounded-2xl border border-line bg-line sm:grid-cols-5">
-                <LocalDataMetric label="有数据" value={localSessionData.sessionsWithData} />
-                <LocalDataMetric label="草稿" value={localSessionData.inProgress} />
-                <LocalDataMetric label="待复盘" value={localSessionData.needsReview} />
-                <LocalDataMetric label="已检查" value={localSessionData.checked} />
-                <LocalDataMetric label="材料标注" value={localSessionData.annotations} />
+                <LocalDataMetric label="有数据" value={!localReady || localUnavailable ? '—' : localSessionData.sessionsWithData} />
+                <LocalDataMetric label="草稿" value={!localReady || localUnavailable ? '—' : localSessionData.inProgress} />
+                <LocalDataMetric label="待复盘" value={!localReady || localUnavailable ? '—' : localSessionData.needsReview} />
+                <LocalDataMetric label="已检查" value={!localReady || localUnavailable ? '—' : localSessionData.checked} />
+                <LocalDataMetric label="材料标注" value={!localReady || localUnavailable ? '—' : localSessionData.annotations} />
               </div>
 
               <div className="mt-5 flex flex-col gap-2 sm:flex-row">
@@ -339,7 +419,7 @@ export default function SettingsView({
                 <button
                   type="button"
                   onClick={handleClearSessionData}
-                  disabled={clearingSessionData || (localSessionData.sessionsWithData === 0 && localSessionData.annotations === 0)}
+                  disabled={clearingSessionData || !localReady || catalog.status !== 'ready' || (!localUnavailable && localSessionData.sessionsWithData === 0 && localSessionData.annotations === 0)}
                   className="inline-flex flex-1 items-center justify-center gap-2 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700 transition-all duration-200 hover:-translate-y-0.5 hover:bg-red-100 active:scale-[0.98] disabled:cursor-not-allowed disabled:border-line disabled:bg-zinc-50 disabled:text-ink-subtle disabled:hover:translate-y-0"
                 >
                   {clearingSessionData ? (
@@ -347,7 +427,7 @@ export default function SettingsView({
                   ) : (
                     <Eraser size={17} weight="regular" />
                   )}
-                  清空本地数据
+                  清理当前目录本机数据
                 </button>
               </div>
             </div>
@@ -382,7 +462,7 @@ export default function SettingsView({
 const ROADMAP = [
   {
     title: '练习形态',
-    body: '真实 IELTS 不是孤立的一题一题。Reading Passage、Listening Section、Writing Task、Speaking Cue Card 会分成各自的考试式界面。',
+    body: 'E-Track 支持四级、六级与雅思分考试练习。四六级提供原创阅读、合成听力、写作和汉译英专项样例，不等同于官方真题或完整模考。',
   },
   {
     title: '个性化设置',
@@ -394,7 +474,7 @@ const ROADMAP = [
   },
 ];
 
-function LocalDataMetric({ label, value }: { label: string; value: number }) {
+function LocalDataMetric({ label, value }: { label: string; value: number | string }) {
   return (
     <div className="bg-surface p-3">
       <p className="text-[11px] font-semibold text-ink-subtle">{label}</p>

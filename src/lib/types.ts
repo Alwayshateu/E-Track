@@ -12,7 +12,8 @@ export interface IeltsQuestion {
   explanation?: string | null;
 }
 
-export type PracticeSkill = 'foundation' | 'reading' | 'listening' | 'writing' | 'speaking';
+export type ExamType = 'ielts' | 'cet4' | 'cet6';
+export type PracticeSkill = 'foundation' | 'reading' | 'listening' | 'writing' | 'speaking' | 'translation';
 export type PracticeMode = 'basic' | 'progressive' | 'challenge';
 export type PracticeDifficulty = 'easy' | 'medium' | 'hard';
 
@@ -21,6 +22,7 @@ export type PracticeMaterialType =
   | 'passage'
   | 'audio'
   | 'writing_prompt'
+  | 'translation_prompt'
   | 'speaking_prompt'
   | 'foundation_note';
 
@@ -63,6 +65,8 @@ export interface PassageAnnotation {
 }
 
 export interface PracticeUnit {
+  /** Older IELTS samples and saved content omit this field. */
+  exam?: ExamType;
   id: string;
   slug: string;
   skill: PracticeSkill;

@@ -7,7 +7,7 @@
  *   RUN_LIVE_SUPABASE_TESTS=1 npx vitest run src/lib/__tests__/practice-attempt-sync.live.test.ts
  */
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { syncPracticeAttempts } from '../practice-attempt-remote';
 import { getSamplePracticeUnits } from '../practice-session-samples';
@@ -60,13 +60,33 @@ describe.skipIf(!LIVE || !url || !anonKey)('practice attempt sync (live)', () =>
   }
 
   beforeAll(async () => {
-    supabase = createClient(url, anonKey);
+    // The protocol requires a durable local confirmation receipt. This explicitly
+    // scoped in-memory browser fixture never reads or writes a real browser profile.
+    const receipts = new Map<string, string>();
+    vi.stubGlobal('window', {
+      localStorage: {
+        getItem: (key: string) => receipts.get(key) ?? null,
+        setItem: (key: string, value: string) => { receipts.set(key, value); },
+      },
+    });
+    const locks = new Map<string, Promise<unknown>>();
+    vi.stubGlobal('navigator', { locks: {
+      request: (name: string, _options: unknown, callback: () => unknown) => {
+        const previous = locks.get(name) ?? Promise.resolve();
+        const next = previous.then(callback, callback);
+        locks.set(name, next);
+        return next;
+      },
+    } });
+    supabase = createClient(url, anonKey, { auth: { persistSession: false, autoRefreshToken: false } });
     const { data, error } = await supabase.auth.signInAnonymously();
     if (error) throw new Error(`anonymous sign-in failed: ${error.message}`);
     userId = data.user!.id;
   });
 
   afterAll(async () => {
+    vi.unstubAllGlobals();
+    if (!supabase || !userId) return;
     // practice_attempts intentionally has no delete policy — a client must not be able
     // to erase its own graded history — so this cleanup cannot succeed from the test's
     // anonymous session. Say so loudly instead of pretending the rows are gone.
@@ -86,9 +106,11 @@ describe.skipIf(!LIVE || !url || !anonKey)('practice attempt sync (live)', () =>
   });
 
   it('writes an attempt with its per-question answers', async () => {
-    const result = await syncPracticeAttempts({ supabase, entries: [entry()] });
+    const result = await syncPracticeAttempts({ supabase, entries: [entry()], expectedUserId: userId });
 
     expect(result.errors).toEqual([]);
+    expect(result.allSynced).toBe(true);
+    expect(result.createdAttempts).toBe(1);
     expect(result.syncedAttempts).toBe(1);
     expect(result.syncedAnswers).toBe(5);
     expect(result.unresolvedQuestions).toBe(0);
@@ -130,10 +152,14 @@ describe.skipIf(!LIVE || !url || !anonKey)('practice attempt sync (live)', () =>
   });
 
   it('is idempotent — re-syncing the same history creates nothing new', async () => {
-    const result = await syncPracticeAttempts({ supabase, entries: [entry()] });
+    const result = await syncPracticeAttempts({ supabase, entries: [entry()], expectedUserId: userId });
 
     expect(result.errors).toEqual([]);
-    expect(result.syncedAttempts).toBe(0);
+    expect(result.allSynced).toBe(true);
+    expect(result.syncedAttempts).toBe(1);
+    expect(result.createdAttempts).toBe(0);
+    expect(result.syncedAnswers).toBe(0);
+    expect(result.unchangedReviews).toBe(1);
 
     const { count } = await supabase
       .from('practice_attempts')
@@ -171,10 +197,12 @@ describe.skipIf(!LIVE || !url || !anonKey)('practice attempt sync (live)', () =>
   it('skips entries whose unit is not seeded in the database', async () => {
     const result = await syncPracticeAttempts({
       supabase,
+      expectedUserId: userId,
       entries: [entry({ id: `ghost:${stamp}`, slug: 'definitely-not-seeded' })],
     });
 
     expect(result.syncedAttempts).toBe(0);
+    expect(result.allSynced).toBe(false);
     expect(result.skippedEntries).toBe(1);
     expect(result.errors).toEqual([]);
   });

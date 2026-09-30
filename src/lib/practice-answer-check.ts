@@ -53,7 +53,7 @@ export function scorePracticeAnswers(
   const incorrect = states.filter((state) => state === 'incorrect').length;
   const skipped = states.filter((state) => state === 'skipped').length;
   const manualReview = states.filter((state) => state === 'manual_review').length;
-  const objectiveTotal = questions.length - manualReview;
+  const objectiveTotal = questions.filter((question) => getPracticeAcceptedAnswers(question).length > 0).length;
 
   return {
     answered,

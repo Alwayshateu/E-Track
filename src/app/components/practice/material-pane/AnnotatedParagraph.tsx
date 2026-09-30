@@ -10,7 +10,7 @@ export function AnnotatedParagraph({
   paragraph: string;
   paragraphIndex: number;
   annotations: PassageAnnotation[];
-  onSelectAnnotation: (annotation: PassageAnnotation) => void;
+  onSelectAnnotation: (annotation: PassageAnnotation, trigger?: HTMLElement) => void;
 }) {
   const paragraphAnnotations = annotations
     .filter((annotation) => annotation.paragraphIndex === paragraphIndex)
@@ -38,11 +38,11 @@ export function AnnotatedParagraph({
         tabIndex={0}
         className={`${className} cursor-pointer transition-shadow hover:shadow-[0_0_0_2px_rgba(245,158,11,0.25)] focus:outline-none focus:ring-2 focus:ring-amber-400/60`}
         title={annotation.note ?? 'Highlighted locally'}
-        onClick={() => onSelectAnnotation(annotation)}
+        onClick={(event) => onSelectAnnotation(annotation, event.currentTarget)}
         onKeyDown={(event) => {
           if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault();
-            onSelectAnnotation(annotation);
+            onSelectAnnotation(annotation, event.currentTarget);
           }
         }}
       >

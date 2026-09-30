@@ -79,16 +79,18 @@ describe('getMaterialText', () => {
 describe('annotationSyncCopy', () => {
   it('describes each sync status', () => {
     expect(annotationSyncCopy({ status: 'syncing', restoredCount: 0 })).toBe('，正在同步到云端…');
-    expect(annotationSyncCopy({ status: 'error', restoredCount: 0 })).toBe(
-      '，本机已保存，云端同步暂时失败，改动后会自动重试。'
-    );
-    expect(annotationSyncCopy({ status: 'synced', restoredCount: 0 })).toBe('，已同步到云端，换设备也能看到。');
-    expect(annotationSyncCopy({ status: 'idle', restoredCount: 0 })).toBe('，本机已保存，改动后会同步到云端。');
-    expect(annotationSyncCopy({ status: 'disabled', restoredCount: 0 })).toBe('，本机已保存，改动后会同步到云端。');
+    expect(annotationSyncCopy({ status: 'error', restoredCount: 0 })).toContain('云端同步未完成');
+    expect(annotationSyncCopy({ status: 'ready', restoredCount: 0 })).toBe('，已与云端一致。');
+    expect(annotationSyncCopy({ status: 'authorization-required', restoredCount: 0 })).toContain('需要登录并明确授权');
+    expect(annotationSyncCopy({ status: 'disabled', restoredCount: 0 })).toContain('不会写入数据库');
+    expect(annotationSyncCopy({ status: 'paused', restoredCount: 0 })).toContain('已暂停');
+    expect(annotationSyncCopy({ status: 'loading', restoredCount: 0 })).toContain('读取完成前不会上传');
+    expect(annotationSyncCopy({ status: 'conflict', restoredCount: 0 })).toContain('等待你选择');
+    expect(annotationSyncCopy({ status: 'ready', dirty: true, restoredCount: 0 })).not.toContain('已与云端一致');
   });
 
   it('mentions the restored count when syncing pulled cloud annotations', () => {
-    expect(annotationSyncCopy({ status: 'synced', restoredCount: 2 })).toContain('含 2 条');
+    expect(annotationSyncCopy({ status: 'ready', restoredCount: 2 })).toContain('恢复 2 条');
   });
 });
 

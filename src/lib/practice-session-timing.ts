@@ -6,6 +6,7 @@ export const DEFAULT_EXAM_SECONDS_BY_SKILL: Record<PracticeSkill, number> = {
   listening: 600,
   writing: 2400,
   speaking: 120,
+  translation: 1800,
 };
 
 export function getExamDurationSeconds(unit: PracticeUnit) {

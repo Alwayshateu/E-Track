@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Microphone, MicrophoneSlash, Record, Stop, Trash, WarningCircle } from '@phosphor-icons/react';
 import { formatTimer } from './format';
 
@@ -17,14 +17,22 @@ function pickAudioMimeType() {
   return candidates.find((type) => MediaRecorder.isTypeSupported(type)) ?? '';
 }
 
+// Browser capabilities are stable for this page; no change subscription is needed.
+const subscribeToRecordingSupport = () => () => {};
+const getServerRecordingSupport = () => false;
+const getRecordingSupport = () =>
+  typeof navigator !== 'undefined' &&
+  !!navigator.mediaDevices &&
+  typeof navigator.mediaDevices.getUserMedia === 'function' &&
+  typeof window !== 'undefined' &&
+  typeof window.MediaRecorder !== 'undefined';
+
 export function SpeakingRecorder() {
-  const [supported] = useState(
-    () =>
-      typeof navigator !== 'undefined' &&
-      !!navigator.mediaDevices &&
-      typeof navigator.mediaDevices.getUserMedia === 'function' &&
-      typeof window !== 'undefined' &&
-      typeof window.MediaRecorder !== 'undefined',
+  // Hydration must use the server snapshot before checking the browser's APIs.
+  const supported = useSyncExternalStore(
+    subscribeToRecordingSupport,
+    getRecordingSupport,
+    getServerRecordingSupport,
   );
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);

@@ -1,5 +1,5 @@
 import { getPracticeAcceptedAnswers, getPracticeAnswerState, scorePracticeAnswers } from './practice-answer-check';
-import type { PracticeQuestion } from './types';
+import type { ExamType, PracticeQuestion } from './types';
 
 export type PracticeReviewQueueReason = 'incorrect' | 'skipped' | 'manual' | 'flagged' | 'note';
 export type PracticeReviewTone = 'red' | 'amber' | 'sky';
@@ -18,6 +18,7 @@ export type PracticeQuestionTypeStat = {
   questionType: PracticeQuestion['question_type'];
   label: string;
   total: number;
+  objectiveTotal: number;
   answered: number;
   correct: number;
   incorrect: number;
@@ -48,7 +49,10 @@ export function formatPracticeSessionClock(seconds: number) {
   return `${String(minutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}`;
 }
 
-function labelQuestionType(type: PracticeQuestion['question_type']) {
+function labelQuestionType(question: PracticeQuestion, exam: ExamType) {
+  const type = question.question_type;
+  if (exam !== 'ielts' && question.metadata?.cetTask === 'translation') return '汉译英';
+  if (exam !== 'ielts' && question.metadata?.cetTask === 'essay') return '写作';
   const labels: Record<PracticeQuestion['question_type'], string> = {
     multiple_choice: 'Multiple Choice',
     true_false_not_given: 'True / False / NG',
@@ -65,18 +69,23 @@ function buildQuestionTypeStats({
   questions,
   answers,
   showResults,
+  exam,
 }: {
   questions: PracticeQuestion[];
   answers: Record<string, string>;
   showResults: boolean;
+  exam: ExamType;
 }) {
-  const stats = new Map<PracticeQuestion['question_type'], PracticeQuestionTypeStat>();
+  const stats = new Map<string, PracticeQuestionTypeStat>();
 
   questions.forEach((question) => {
-    const current = stats.get(question.question_type) ?? {
+    const label = labelQuestionType(question, exam);
+    const key = `${question.question_type}:${label}`;
+    const current = stats.get(key) ?? {
       questionType: question.question_type,
-      label: labelQuestionType(question.question_type),
+      label,
       total: 0,
+      objectiveTotal: 0,
       answered: 0,
       correct: 0,
       incorrect: 0,
@@ -88,6 +97,7 @@ function buildQuestionTypeStats({
     const state = getPracticeAnswerState(question, answer, showResults);
 
     current.total += 1;
+    if (getPracticeAcceptedAnswers(question).length > 0) current.objectiveTotal += 1;
     if (answer.trim()) current.answered += 1;
     if (showResults) {
       if (state === 'correct') current.correct += 1;
@@ -96,23 +106,20 @@ function buildQuestionTypeStats({
       if (state === 'manual_review') current.manualReview += 1;
     }
 
-    stats.set(question.question_type, current);
+    stats.set(key, current);
   });
 
-  return [...stats.values()].map((stat) => {
-    const objectiveTotal = stat.total - stat.manualReview;
-    return {
-      ...stat,
-      accuracy: showResults && objectiveTotal > 0 ? Math.round((stat.correct / objectiveTotal) * 100) : null,
-    };
-  });
+  return [...stats.values()].map((stat) => ({
+    ...stat,
+    accuracy: showResults && stat.objectiveTotal > 0 ? Math.round((stat.correct / stat.objectiveTotal) * 100) : null,
+  }));
 }
 
 function buildFocusSummary(score: ReturnType<typeof scorePracticeAnswers>, queue: PracticeReviewQueueItem[]) {
   if (score.total === 0) return '暂无题目。';
   if (score.answered === 0) return '先完成至少一道题，再生成本地复盘。';
   if (score.manualReview === score.answered && score.objectiveTotal === 0) {
-    return '这次是主观任务，重点看结构、展开、流利度和自评笔记。';
+    return '这次是主观任务，请对照题目要求和参考内容自评，并记录下一稿要改进的地方；不提供自动评分。';
   }
   if (queue.some((item) => item.reason === 'incorrect')) {
     return '优先处理错题：回到材料中定位证据，再比较你的答案和 reference。';
@@ -121,7 +128,7 @@ function buildFocusSummary(score: ReturnType<typeof scorePracticeAnswers>, queue
     return '优先补齐跳过题：先看题干定位词，再回材料或 transcript 找同义替换。';
   }
   if (queue.some((item) => item.reason === 'manual')) {
-    return '主观回应已进入待反馈队列：先按 checklist 自评，再准备后续 AI / rubric feedback。';
+    return '主观回应已加入复盘队列：请按题目要求和 checklist 自评；当前不提供自动评分。';
   }
   if (queue.length > 0) return '当前主要是你主动标记或记录的复盘点。';
   return '没有高优先级复盘项，可以进入下一组或提高难度。';
@@ -206,7 +213,7 @@ function buildReviewQueue({
       const state = getPracticeAnswerState(question, answers[question.id] ?? '', true);
 
       if (state === 'manual_review') {
-        add(question, { reason: 'manual', label: '待反馈', tone: 'sky' });
+        add(question, { reason: 'manual', label: '待自评', tone: 'sky' });
       }
     });
   }
@@ -239,6 +246,7 @@ export function buildPracticeReviewReport({
   reviewNotesByQuestionId,
   rubricRatingsByQuestionId,
   elapsedSeconds,
+  exam = 'ielts',
 }: {
   questions: PracticeQuestion[];
   answers: Record<string, string>;
@@ -247,6 +255,7 @@ export function buildPracticeReviewReport({
   reviewNotesByQuestionId: Record<string, string>;
   rubricRatingsByQuestionId?: Record<string, Record<string, number>>;
   elapsedSeconds: number;
+  exam?: ExamType;
 }): PracticeReviewReport {
   const score = scorePracticeAnswers(questions, answers);
   const noteCount = Object.values(reviewNotesByQuestionId).filter((note) => note.trim()).length;
@@ -255,11 +264,11 @@ export function buildPracticeReviewReport({
   return {
     score,
     noteCount,
-    manualOnly: score.manualReview > 0 && score.objectiveTotal === 0,
+    manualOnly: score.total > 0 && score.objectiveTotal === 0,
     canReveal: score.answered > 0,
     elapsedLabel: formatPracticeSessionClock(elapsedSeconds),
     completionPercent: score.total > 0 ? Math.round((score.answered / score.total) * 100) : 0,
-    questionTypeStats: buildQuestionTypeStats({ questions, answers, showResults }),
+    questionTypeStats: buildQuestionTypeStats({ questions, answers, showResults, exam }),
     focusSummary: buildFocusSummary(score, queue),
     nextSteps: buildNextSteps({
       score,
@@ -267,7 +276,9 @@ export function buildPracticeReviewReport({
       noteCount,
       flaggedCount: flaggedQuestionIds.length,
     }),
-    rubricSummary: buildRubricSummary(rubricRatingsByQuestionId ?? {}),
+    rubricSummary: exam === 'ielts'
+      ? buildRubricSummary(rubricRatingsByQuestionId ?? {})
+      : { ratedQuestions: 0, averageBand: null },
     queue,
   };
 }

@@ -1,7 +1,18 @@
+import { getPracticeReviewSelfRatedBand } from './practice-review';
 import type {
   PracticeAttemptAnswer,
+  PracticeAttemptReview,
   PracticeSessionHistoryEntry,
 } from './practice-session-history';
+
+/** Only this metadata namespace is mutable after submission. */
+export const PRACTICE_ATTEMPT_REVIEW_METADATA_KEY = 'eTrackReview';
+export const PRACTICE_ATTEMPT_REVIEW_METADATA_VERSION = 1;
+
+export type PracticeAttemptReviewState = {
+  review: PracticeAttemptReview | null;
+  selfRatedBand: number | null;
+};
 
 /**
  * Row shapes for the practice_attempts / practice_answers tables. These mirror the
@@ -50,6 +61,7 @@ export function questionLookupKey(unitSlug: string, externalKey: string) {
 
 export type PracticeAttemptSyncPlan = {
   attempt: PracticeAttemptInsert;
+  reviewState: PracticeAttemptReviewState;
   /** Answer rows without attempt_id — the caller fills it in after the attempt insert. */
   answers: Omit<PracticeAnswerInsert, 'attempt_id'>[];
   /** Local question keys that had no matching DB row; recorded for reporting, not fatal. */
@@ -119,7 +131,15 @@ export function buildPracticeAttemptSyncPlans({
       });
     }
 
+    const reviewState: PracticeAttemptReviewState = {
+      review: entry.review ?? null,
+      selfRatedBand: entry.review
+        ? getPracticeReviewSelfRatedBand(entry.exam, entry.review)
+        : entry.selfRatedBand,
+    };
+
     plans.push({
+      reviewState,
       attempt: {
         user_id: userId,
         unit_id: unitId,
@@ -136,13 +156,25 @@ export function buildPracticeAttemptSyncPlans({
         objective_total: entry.objectiveTotal,
         total_count: entry.total,
         completion_percent: entry.completionPercent,
-        self_rated_band: entry.selfRatedBand,
+        self_rated_band: reviewState.selfRatedBand,
         metadata: {
           skill: entry.skill,
           difficulty: entry.difficulty,
           title: entry.title,
           syncedFrom: 'local-history',
           hasSnapshot: Boolean(entry.answers?.length),
+          // Never infer full text from the presence of answers on a legacy entry.
+          answerCompleteness: entry.snapshotVersion === 2 && entry.answerCompleteness === 'full'
+            ? 'full' : 'legacy-excerpt',
+          ...(entry.snapshotVersion === 2 ? { snapshotVersion: 2 } : {}),
+          ...(entry.parentAttemptId ? { parentAttemptId: entry.parentAttemptId } : {}),
+          ...(entry.revisionGoal !== undefined ? { revisionGoal: entry.revisionGoal } : {}),
+          ...(entry.review ? {
+            [PRACTICE_ATTEMPT_REVIEW_METADATA_KEY]: {
+              version: PRACTICE_ATTEMPT_REVIEW_METADATA_VERSION,
+              review: entry.review,
+            },
+          } : {}),
         },
       },
       answers,

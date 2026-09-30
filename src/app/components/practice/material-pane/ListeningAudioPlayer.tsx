@@ -125,7 +125,9 @@ export function ListeningAudioPlayer({
             <div>
               <p className="text-sm font-semibold">Listening 音频</p>
               <p className="mt-1 text-xs leading-relaxed text-sky-800/75">
-                示例占位音轨（非真人朗读），用于演示播放器与同步字幕。字幕行会跟随进度高亮，可点击跳转。
+                {audioUrl.startsWith('/api/cet-trial/media/')
+                  ? '仅限获授权参与者在本机试用。音频不可公开转发；若有已核对字幕，可随进度定位。'
+                  : '示例音轨用于演示播放器与同步字幕，不代表正式考试录音。字幕行可随进度高亮、点击跳转。'}
               </p>
             </div>
             <button

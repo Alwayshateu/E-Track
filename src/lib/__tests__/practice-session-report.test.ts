@@ -81,7 +81,7 @@ describe('practice session report', () => {
     ]);
   });
 
-  it('sets canReveal only after at least one answer and detects answered manual-only sessions', () => {
+  it('requires an answer to reveal but detects manual-only sessions even before answering', () => {
     const manualQuestion = question('manual-q', 1, []);
 
     expect(buildPracticeReviewReport({
@@ -93,7 +93,7 @@ describe('practice session report', () => {
       elapsedSeconds: 0,
     })).toMatchObject({
       canReveal: false,
-      manualOnly: false,
+      manualOnly: true,
     });
 
     expect(buildPracticeReviewReport({

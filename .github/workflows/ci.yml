@@ -14,6 +14,9 @@ jobs:
   verify:
     name: typecheck · lint · test · build
     runs-on: ubuntu-latest
+    env:
+      # Never opt into remote read/write suites in this offline verification job.
+      RUN_LIVE_SUPABASE_TESTS: '0'
     steps:
       - uses: actions/checkout@v4
 
@@ -26,15 +29,19 @@ jobs:
         run: npm ci
 
       - name: Typecheck
-        run: npx tsc --noEmit
+        run: npm run typecheck
 
       - name: Lint
         run: npm run lint
 
-      # Live Supabase suites self-skip without RUN_LIVE_SUPABASE_TESTS + credentials,
-      # so the offline suite runs here with no secrets required.
+      # RUN_LIVE_SUPABASE_TESTS is pinned to 0 above; live suites self-skip.
+      # The offline suite needs no real Supabase secrets.
       - name: Test
         run: npm test
+
+      # The release-staging regression suite uses Node's runner and is not discovered by Vitest.
+      - name: Test release staging safeguards
+        run: npm run test:staging
 
       # Pages are force-dynamic (evaluated per request, not at build), so placeholder
       # public env is enough to satisfy the Supabase client constructors during build.

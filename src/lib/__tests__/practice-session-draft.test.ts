@@ -42,6 +42,16 @@ describe('practice session draft sanitization', () => {
     );
   });
 
+  it('accepts an id-only question catalogue and never generates attempt identity during sanitization', () => {
+    const minimal = questions.map(({ id }) => ({ id }));
+    const first = sanitizePracticeSessionDraft({ answers: { q1: 'one' }, showResults: true }, minimal);
+    const second = sanitizePracticeSessionDraft({ answers: { q1: 'one' }, showResults: true }, minimal);
+    expect(first).toEqual(second);
+    expect(first.attemptId).toBeUndefined();
+    expect(first.legacyChecked).toBe(true);
+    expect(createEmptyPracticeSessionDraft(minimal).attemptId).toBeUndefined();
+  });
+
   it('strips unknown question IDs from answers, flags, and notes', () => {
     const draft = sanitizePracticeSessionDraft({
       answers: { q1: 'answer', missing: 'stale' },

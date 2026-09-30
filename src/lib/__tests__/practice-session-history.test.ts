@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   buildPracticeAttemptAnswers,
@@ -8,7 +8,12 @@ import {
   sanitizePracticeSessionHistory,
   summarizePracticeSessionHistory,
   type PracticeSessionHistoryEntry,
+  appendPracticeSessionHistoryEntryResult, readPracticeSessionHistoryResult, getPracticeReviewBaseline,
+  updatePracticeSessionHistoryReview, PRACTICE_SESSION_HISTORY_STORAGE_KEY, PRACTICE_SESSION_HISTORY_LIMIT,
+  PracticeAnswerLimitError, writePracticeSessionHistoryResult,
 } from '../practice-session-history';
+import { sanitizePracticeAttemptReview } from '../practice-review';
+import { PRACTICE_STORAGE_EVENT, type PracticeStorageChange } from '../practice-storage';
 import { buildPracticeReviewReport } from '../practice-session-report';
 import type { PracticeQuestion, PracticeUnit } from '../types';
 
@@ -169,14 +174,14 @@ describe('buildPracticeSessionHistoryEntry', () => {
 });
 
 describe('isSamePracticeAttemptSignature', () => {
-  it('treats identical outcomes as the same regardless of timestamp', () => {
+  it('preserves equal outcomes as different attempts when their ids differ', () => {
     expect(
       isSamePracticeAttemptSignature(entry({ recordedAt: 1 }), entry({ recordedAt: 999 }))
-    ).toBe(true);
+    ).toBe(false);
   });
 
-  it('distinguishes attempts that differ in score', () => {
-    expect(isSamePracticeAttemptSignature(entry({ correct: 4 }), entry({ correct: 5 }))).toBe(false);
+  it('uses stable identity even if a stale caller passes a different score', () => {
+    expect(isSamePracticeAttemptSignature(entry({ correct: 4 }), entry({ correct: 5 }))).toBe(true);
   });
 });
 
@@ -288,6 +293,83 @@ describe('summarizePracticeSessionHistory', () => {
     expect(reading?.attempts).toBe(2);
     expect(reading?.averageAccuracy).toBe(70);
     expect(listening?.averageAccuracy).toBe(50);
+  });
+});
+
+describe('strict history storage transactions', () => {
+  let data: Map<string, string>;
+  let notifications: PracticeStorageChange[];
+  beforeEach(() => {
+    data = new Map(); notifications = [];
+    let queue: Promise<unknown> = Promise.resolve();
+    vi.stubGlobal('navigator', { locks: { request: (_name: string, _options: unknown, operation: () => unknown) => {
+      const task = queue.then(operation); queue = task.catch(() => {}); return task;
+    } } });
+    vi.stubGlobal('window', {
+      localStorage: { getItem: (key: string) => data.get(key) ?? null, setItem: (key: string, value: string) => data.set(key, value), removeItem: (key: string) => data.delete(key) },
+      dispatchEvent: (event: CustomEvent<PracticeStorageChange>) => { expect(event.type).toBe(PRACTICE_STORAGE_EVENT); notifications.push(event.detail); return true; },
+    });
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('searches all IDs and keeps equal scores across concurrent distinct identities', async () => {
+    const first = entry({ id: 'first', recordedAt: 1 });
+    expect((await appendPracticeSessionHistoryEntryResult(first)).ok).toBe(true);
+    expect((await appendPracticeSessionHistoryEntryResult(entry({ id: 'later', recordedAt: 2 }))).ok).toBe(true);
+    expect((await appendPracticeSessionHistoryEntryResult(first)).ok).toBe(true);
+    expect(notifications).toHaveLength(2);
+    await Promise.all([appendPracticeSessionHistoryEntryResult(entry({ id: 'tab-a', recordedAt: 3 })), appendPracticeSessionHistoryEntryResult(entry({ id: 'tab-b', recordedAt: 4 }))]);
+    const result = readPracticeSessionHistoryResult();
+    expect(result.ok && result.value.map((item) => item.id)).toEqual(['tab-b', 'tab-a', 'later', 'first']);
+  });
+
+  it('rejects an attempt ID reused for different immutable answers or score', async () => {
+    await appendPracticeSessionHistoryEntryResult(entry({ id: 'same' }));
+    expect(await appendPracticeSessionHistoryEntryResult(entry({ id: 'same', correct: 0 }))).toMatchObject({ ok: false, reason: 'conflict' });
+  });
+
+  it('preserves the old key, oldest identifiers and exact 120-entry retention rule', async () => {
+    const entries = Array.from({ length: 122 }, (_, index) => entry({ id: `legacy:${index}`, recordedAt: index }));
+    expect(await writePracticeSessionHistoryResult(entries)).toMatchObject({ ok: true });
+    const raw = JSON.parse(data.get(PRACTICE_SESSION_HISTORY_STORAGE_KEY)!);
+    expect(raw).toHaveLength(PRACTICE_SESSION_HISTORY_LIMIT);
+    expect(raw[0].id).toBe('legacy:121');
+    expect(raw.at(-1).id).toBe('legacy:2');
+    expect(raw.every((item: PracticeSessionHistoryEntry) => item.answerCompleteness === 'legacy-excerpt')).toBe(true);
+  });
+
+  it('rejects total text over 200000 without truncating stored values or emitting success', async () => {
+    const questions = Array.from({ length: 11 }, (_, index) => question(`q${index}`, index + 1, []));
+    const answers = Object.fromEntries(questions.map((question) => [question.id, 'x'.repeat(20_000)]));
+    expect(() => buildPracticeAttemptAnswers({ questions, answers })).toThrow(PracticeAnswerLimitError);
+    const overLimit = entry({ snapshotVersion: 2, answerCompleteness: 'full', total: 11,
+      answers: questions.map((question) => ({ questionId: question.id, questionNumber: question.question_number, questionType: question.question_type,
+        prompt: '', outcome: 'manual_review', userAnswer: answers[question.id], correctAnswer: '' })) });
+    expect(await appendPracticeSessionHistoryEntryResult(overLimit)).toMatchObject({ ok: false, reason: 'limit' });
+    expect(data.has(PRACTICE_SESSION_HISTORY_STORAGE_KEY)).toBe(false);
+    expect(notifications).toEqual([]);
+    data.set(PRACTICE_SESSION_HISTORY_STORAGE_KEY, JSON.stringify([overLimit]));
+    expect(readPracticeSessionHistoryResult()).toMatchObject({ ok: false, reason: 'limit' });
+  });
+
+  it('does not mislabel short legacy answer excerpts as full text', () => {
+    const legacy = entry({ answers: [{ questionId: 'q1', questionNumber: 1, questionType: 'short_answer', prompt: 'Q', outcome: 'correct', userAnswer: 'x'.repeat(399) + '…', correctAnswer: 'yes' }] });
+    data.set(PRACTICE_SESSION_HISTORY_STORAGE_KEY, JSON.stringify([legacy]));
+    const result = readPracticeSessionHistoryResult();
+    expect(result.ok && result.value[0]).toMatchObject({ id: legacy.id, answerCompleteness: 'legacy-excerpt', answers: legacy.answers });
+  });
+
+  it('checks both review version and signature and stays update-only when missing', async () => {
+    const original = entry({ id: 'review', review: sanitizePracticeAttemptReview({ improvementGoal: 'first' }) });
+    await appendPracticeSessionHistoryEntryResult(original);
+    const baseline = getPracticeReviewBaseline(original.review);
+    const content = { ...original.review!, improvementGoal: 'second' };
+    expect(await updatePracticeSessionHistoryReview(original.id, content, { ...baseline, signature: 'stale' })).toMatchObject({ ok: false, reason: 'conflict' });
+    expect(await updatePracticeSessionHistoryReview(original.id, content, { ...baseline, revision: 2 })).toMatchObject({ ok: false, reason: 'conflict' });
+    expect(await updatePracticeSessionHistoryReview('removed', content, baseline)).toMatchObject({ ok: false, reason: 'missing' });
+    expect((await updatePracticeSessionHistoryReview(original.id, content, baseline)).ok).toBe(true);
+    const result = readPracticeSessionHistoryResult();
+    expect(result.ok && result.value[0].review?.revision).toBe(1);
   });
 });
 

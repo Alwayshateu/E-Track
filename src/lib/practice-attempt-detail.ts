@@ -10,7 +10,9 @@ export type PracticeAttemptComparison = {
   /** 1-based position of this attempt among all attempts of the same unit, oldest first. */
   attemptIndex: number;
   unitAttempts: number;
+  /** Explicit parent only. Temporal neighbors are not revision drafts. */
   previous: PracticeSessionHistoryEntry | null;
+  parentMissing: boolean;
   accuracyDelta: number | null;
   bandDelta: number | null;
   elapsedDelta: number | null;
@@ -22,7 +24,16 @@ export function findPracticeAttempt(
   entries: PracticeSessionHistoryEntry[],
   attemptId: string
 ): PracticeSessionHistoryEntry | null {
-  return entries.find((entry) => entry.id === attemptId) ?? null;
+  const exact = entries.find((entry) => entry.id === attemptId);
+  if (exact) return exact;
+  // Next route props may still contain %3A. Literal percent IDs take precedence;
+  // decode at most once and never let malformed escapes crash local history.
+  try {
+    const decoded = decodeURIComponent(attemptId);
+    return entries.find((entry) => entry.id === decoded) ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /** Tally per-question outcomes from a snapshot. Pure. */
@@ -51,7 +62,8 @@ export function selectPracticeAttemptRetryAnswers(answers: PracticeAttemptAnswer
 }
 
 /**
- * Position this attempt within the unit's own attempt series and diff it against the previous one.
+ * Position this attempt within the unit's series and compare only its explicit parent.
+ * Time adjacency must never imply a revision relationship.
  * Deltas are null when either side lacks a comparable value. Pure.
  */
 export function buildPracticeAttemptComparison(
@@ -64,7 +76,9 @@ export function buildPracticeAttemptComparison(
 
   const position = series.findIndex((entry) => entry.id === attempt.id);
   const attemptIndex = position === -1 ? series.length : position + 1;
-  const previous = position > 0 ? series[position - 1] : null;
+  const previous = attempt.parentAttemptId
+    ? series.find((entry) => entry.id === attempt.parentAttemptId && entry.id !== attempt.id) ?? null
+    : null;
 
   const accuracyDelta =
     attempt.accuracy !== null && previous?.accuracy !== null && previous?.accuracy !== undefined
@@ -92,6 +106,7 @@ export function buildPracticeAttemptComparison(
     attemptIndex,
     unitAttempts: series.length,
     previous,
+    parentMissing: Boolean(attempt.parentAttemptId && !previous),
     accuracyDelta,
     bandDelta,
     elapsedDelta,

@@ -15,9 +15,11 @@ export type MockResult = { data?: unknown; error?: unknown; count?: number | nul
 
 export type QueryContext = {
   table: string;
-  op: 'select' | 'insert' | 'update' | 'delete' | 'upsert';
+  op: 'select' | 'insert' | 'update' | 'delete' | 'upsert' | 'rpc';
   isCount: boolean;
   args: Record<string, unknown>;
+  /** Every chained filter, including repeated .eq() calls used for owner/CAS checks. */
+  filters: { name: string; args: unknown[] }[];
   payload?: unknown;
 };
 
@@ -34,7 +36,7 @@ interface Builder extends PromiseLike<MockResult> {
   select(cols?: string, opts?: { count?: string; head?: boolean }): Builder;
   insert(payload?: unknown): Builder;
   update(payload?: unknown): Builder;
-  upsert(payload?: unknown, opts?: { onConflict?: string }): Builder;
+  upsert(payload?: unknown, opts?: { onConflict?: string; ignoreDuplicates?: boolean }): Builder;
   delete(): Builder;
   eq(...a: unknown[]): Builder;
   neq(...a: unknown[]): Builder;
@@ -55,8 +57,9 @@ export function createSupabaseMock(resolve: Resolver, options: MockAuthOptions =
   const calls: QueryContext[] = [];
 
   function from(table: string): Builder {
-    const ctx: QueryContext = { table, op: 'select', isCount: false, args: {} };
+    const ctx: QueryContext = { table, op: 'select', isCount: false, args: {}, filters: [] };
     let settled = false;
+    let result: MockResult;
     // Once a mutation verb runs, a trailing `.select()` (e.g. `.upsert(...).select('id')`)
     // must not reset op back to 'select' — resolvers key on the mutation op.
     let mutated = false;
@@ -65,14 +68,16 @@ export function createSupabaseMock(resolve: Resolver, options: MockAuthOptions =
       if (!settled) {
         settled = true;
         calls.push(ctx);
+        result = resolve(ctx);
       }
-      return resolve(ctx);
+      return result;
     };
 
     const record =
       (name: string) =>
       (...a: unknown[]): Builder => {
         ctx.args[name] = a.length <= 1 ? a[0] : a;
+        ctx.filters.push({ name, args: a });
         return builder;
       };
 
@@ -99,6 +104,7 @@ export function createSupabaseMock(resolve: Resolver, options: MockAuthOptions =
         ctx.op = 'upsert';
         ctx.payload = payload;
         if (opts?.onConflict) ctx.args.onConflict = opts.onConflict;
+        if (opts?.ignoreDuplicates !== undefined) ctx.args.ignoreDuplicates = opts.ignoreDuplicates;
         mutated = true;
         return builder;
       },
@@ -133,6 +139,12 @@ export function createSupabaseMock(resolve: Resolver, options: MockAuthOptions =
     }),
   };
 
-  const client = { from, auth } as unknown as SupabaseClient;
+  const rpc = async (name: string, payload?: Record<string, unknown>) => {
+    const ctx: QueryContext = { table: name, op: 'rpc', isCount: false, args: {}, filters: [], payload };
+    calls.push(ctx);
+    return resolve(ctx);
+  };
+
+  const client = { from, auth, rpc } as unknown as SupabaseClient;
   return { client, calls };
 }

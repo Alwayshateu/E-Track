@@ -1,8 +1,9 @@
 import type { PassageAnnotation } from '@/lib/types';
+import { createPracticeStorageToken } from '@/lib/practice-storage';
 
-// Pure state transitions extracted from usePracticeSessionState's setX((current) => ...) updaters.
-// Each takes the current value plus the event args and returns the next value — no React, no I/O —
-// so the invariants they encode (toggle idempotency, empty-input clears the key, derived ids) are unit-testable.
+// Immutable state transitions extracted from usePracticeSessionState's setX((current) => ...) updaters.
+// These do not perform storage I/O or mutate their inputs. All are deterministic except addAnnotation,
+// which allocates a fresh identity token; tests assert identity invariants rather than a derived id.
 
 // Flag toggle: remove when already flagged, otherwise append. Toggling the same id twice is a no-op.
 export function toggleFlag(current: string[], questionId: string): string[] {
@@ -66,7 +67,7 @@ export function setRubricRating(
   };
 }
 
-// Annotation add: append with a derived id combining paragraph, 1-based position, and a text prefix.
+// Annotation add: allocate a fresh id independent of list length/text; existing ids remain untouched.
 export function addAnnotation(
   current: PassageAnnotation[],
   annotation: Omit<PassageAnnotation, 'id'>
@@ -75,7 +76,7 @@ export function addAnnotation(
     ...current,
     {
       ...annotation,
-      id: `${annotation.paragraphIndex}-${current.length + 1}-${annotation.text.slice(0, 12)}`,
+      id: createPracticeStorageToken(),
     },
   ];
 }
@@ -115,9 +116,8 @@ export function pickReviewTarget(
   return next?.id ?? null;
 }
 
-// Attempt recording: a showResults change records a NEW history entry only on a genuine false→true
-// reveal. The null previous value is the hydration pass (baseline capture) and true→true is a resumed
-// draft whose results were already revealed — neither should re-record, so both return false.
+// Legacy visibility predicate retained for compatibility tests. It does NOT establish submission
+// identity; the session hook now freezes and commits stable attempt IDs through the storage journal.
 export function shouldRecordAttempt(previousShowResults: boolean | null, showResults: boolean): boolean {
   return previousShowResults === false && showResults;
 }

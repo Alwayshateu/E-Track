@@ -2,7 +2,6 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useState } from 'react';
 import {
   BookOpenText,
   ChartLineUp,
@@ -13,15 +12,15 @@ import {
   ListChecks,
   Target,
 } from '@phosphor-icons/react';
-import { readPracticeSessionDraftStatuses } from '@/lib/practice-session-draft';
+import { usePracticeCatalog } from './practice/usePracticeCatalog';
+import type { PracticeCatalogSnapshot } from '@/lib/practice-catalog-types';
 import { getPracticeLearningSummary } from '@/lib/practice-session-recommendations';
-import { getSamplePracticeUnits } from '@/lib/practice-session-samples';
 import { sessionBadgeClass, sessionNavStatusFromSummary } from './nav-status';
 
 const NAV_ITEMS = [
   { href: '/', label: '首页', Icon: House, match: (path: string) => path === '/' },
   { href: '/dashboard', label: 'Dashboard', Icon: Gauge, match: (path: string) => path === '/dashboard' },
-  { href: '/practice', label: '单题练习', Icon: Target, match: (path: string) => path === '/practice' },
+  { href: '/practice', label: 'IELTS 单题', Icon: Target, match: (path: string) => path === '/practice' },
   {
     href: '/practice/sessions',
     label: 'Sessions',
@@ -39,28 +38,31 @@ const NAV_ITEMS = [
   { href: '/favorites', label: '收藏', Icon: Heart, match: (path: string) => path === '/favorites' },
 ];
 
-function getSessionNavStatus() {
-  const units = getSamplePracticeUnits();
-  const statuses = readPracticeSessionDraftStatuses(units);
-  return sessionNavStatusFromSummary(getPracticeLearningSummary(statuses));
-}
-
-export default function AppQuickNav() {
+export default function AppQuickNav({ catalog, userId }: { catalog: PracticeCatalogSnapshot; userId: string }) {
   const pathname = usePathname();
-  const [sessionStatus] = useState(getSessionNavStatus);
+  const { statuses, ready, unavailable } = usePracticeCatalog(catalog, userId);
+  const sessionStatus = !ready
+    ? { label: '进度加载中', tone: 'sky' as const }
+    : unavailable
+      ? { label: '进度不可用', tone: 'amber' as const }
+      : sessionNavStatusFromSummary(getPracticeLearningSummary(statuses));
 
   return (
     <nav className="mx-auto max-w-7xl px-4 pt-4 sm:px-6 lg:px-8" aria-label="主要学习入口">
       <div className="flex items-center gap-2 overflow-x-auto rounded-full border border-line bg-white/80 p-1.5 shadow-[0_10px_28px_-24px_rgba(45,27,51,0.35)] backdrop-blur-xl">
-        <span className="hidden items-center gap-2 rounded-full bg-ink px-3 py-2 text-xs font-semibold text-white sm:flex">
+        <Link
+          href="/practice/sessions?exam=all"
+          className="hidden shrink-0 items-center gap-2 rounded-full bg-ink px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-accent-strong focus-visible:outline-white sm:flex"
+          aria-label="打开全考试 Session 概览"
+        >
           <ListChecks size={14} weight="regular" />
-          Study Loop
+          全考试概览
           {sessionStatus && (
             <span className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] text-white/75">
               {sessionStatus.label}
             </span>
           )}
-        </span>
+        </Link>
         {NAV_ITEMS.map(({ href, label, Icon, match, session }) => {
           const active = match(pathname);
 

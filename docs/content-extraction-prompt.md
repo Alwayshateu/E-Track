@@ -1,270 +1,152 @@
-# IELTS 题库抽取 Prompt(PDF → PracticeUnit JSON,含参考图）
+# PracticeUnit 内容抽取与审核 Prompt
 
-把一份 Cambridge IELTS PDF(经 MinerU OCR)转成本项目的 `PracticeUnit` JSON,**包含题目参考图片**,产出直接可进 seed(`scripts/generate-practice-seed.mjs` → `render-practice-seed.ts` → `0002_seed_practice_samples.sql`)。
+> 本文件是内容编辑和模型辅助抽取的工作指引，不是版权授权证明，也不是把未经审核的输出直接写进生产数据库的脚本。当前目标是得到可审阅的 JSON 草稿；数据库迁移、seed 和公开发布必须走独立审查。
 
-本文既是给「人」看的流程说明,末尾的 [§8 可复制 Prompt](#8-可复制-prompt) 是给「模型」看的、可直接粘贴的指令。
+## 0. 先确认权限，再抽取
 
----
+- Cambridge IELTS PDF、图表、地图、音频和 OCR 中间文件属于受版权约束的外部材料。知道“来自 Cambridge”不等于获得复制、公开发布、训练模型或再分发授权。
+- 未确认许可前，原始 PDF、图片和音频放在受控的本地/私有位置，不放进公开 `public/`、公开 CDN 或仓库。`.gitignore` 只是避免 Git 追踪，不是版权或部署安全措施。
+- 只有权利负责人确认范围后，才决定是否可以在产品中显示完整文本、参考图、音频或只保留内部审阅路径。私有桶能限制访问，但不会自动取得版权。
+- 仓库声明为内部原创的 CET 样例可以用于内部演示，但作者、许可、审核日期和公开发布资格仍须负责人确认，不能由抽取模型代填。
+- 不把学生真实回答、个人信息、真实麦克风录音或账号数据发给抽取模型。
 
-## 1. 先分清哪里真的有图
+## 1. 当前数据契约
 
-| 技能 | 图的角色 | 存哪 |
-|------|---------|------|
-| **写作 Task 1(学术)** | 图表/流程图/地图**就是题目本身** | unit 级 `asset_url` |
-| **听力 Part 2(有时 3)** | 地图/平面图贴标签题 | question 级 `metadata.assetUrl` |
-| **阅读** | 偶尔的流程图 labeling | 视情况 unit `asset_url` 或 question `metadata.assetUrl` |
-| 口语 / 纯文字题 | 无图 | — |
+一个 section/passage/task 生成一个 `PracticeUnit`，题目放在 `questions` 中。以下是字段示意，含 `|` 的值表示允许枚举，不是可直接导入的实例；以 `src/lib/types.ts` 和当前 mapper 为准。新内容显式填写 `exam: ielts | cet4 | cet6`，旧未填考试的记录兼容为 IELTS：
 
-**结论**:优先做写作 Task 1 和听力地图题,覆盖 90% 的「离不开图」的场景。
-
----
-
-## 2. OCR / 抽图流程(MinerU)
-
-关键认知:**图不用你手动截**。MinerU 的版面检测会把 figure 区域自动裁成单独 PNG,并给出结构化定位。
-
-1. **按 passage/section 跑 MinerU**(别整本 PDF 一次跑,图集会乱):得到 `xxx.md` + `xxx_content_list.json` + `images/` 目录。
-2. **用 `content_list.json`(不是 markdown)做「图↔题」映射**:里面每个块带 `type`(text/image/table)、`img_path`、`page`。按页码 + 位置 + 周围题号把图归到对应 unit / question。写作 Task1 一图对一 task 最简单;听力地图在它所标注题号组的正上方。
-3. **重命名成稳定、可读**:按 [§3.1](#31-命名规范-cam18-已定cam19-必须沿用) 的资源路径模式,如 `t1-writing-task1.jpg`、`t2-listening-p2-map.jpg`。
-4. **就位**:本地路径放 `public/images/{book}/`、`public/audio/{book}/`(cam18 现状);要走私有桶见 [§5](#5-图片存储supabase-storage)。
-5. **在 JSON 里填 URL**:unit 级填 `asset_url`,question 级填 `metadata.assetUrl`(路径模式同 §3.1)。
-
----
-
-## 3. 输出契约(严格匹配本项目 schema)
-
-一个 section/passage = 一个 `PracticeUnit`。字段和类型**必须**和 `src/lib/types.ts` 一致:
-
-```jsonc
+```json
 {
-  "id": "cam18-test1-reading-p2",          // 全局唯一,见 §3.1 命名规范
-  "slug": "reading-cam18-t1-forest-management", // 全局唯一,人类可读
-  "skill": "reading",                       // foundation | reading | listening | writing | speaking
-  "mode": "challenge",                      // basic | progressive | challenge(训练模式,≠难度)
-  "title": "Cambridge 18 · Test 1 · Reading P2",
-  "description": "Forest management ...",   // 可为 null
-  "difficulty": "hard",                     // easy | medium | hard(内容难度)
-  "material_type": "passage",               // none | passage | audio | writing_prompt | speaking_prompt | foundation_note
-  "passage_text": "……全文,段落用 \\n\\n 分隔……", // 阅读用;听力放 transcript;写作放 metadata.prompt
-  "audio_url": null,                         // 听力音频;没有填 null
-  "transcript": null,                        // 听力原文
-  "asset_url": null,                         // ★ unit 级参考图(写作 Task1 图表/地图);没有填 null
-  "time_limit_seconds": 1200,               // 建议用时;不限时填 null
-  "metadata": { "source": "剑桥雅思18.pdf" },
-  "questions": [ /* 见下 */ ]
+  "exam": "ielts|cet4|cet6",
+  "id": "stable-local-id",
+  "slug": "reading-source-topic",
+  "skill": "foundation|reading|listening|writing|speaking|translation",
+  "mode": "basic|progressive|challenge",
+  "title": "人类可读标题",
+  "description": null,
+  "difficulty": "easy|medium|hard",
+  "material_type": "none|passage|audio|writing_prompt|translation_prompt|speaking_prompt|foundation_note",
+  "passage_text": null,
+  "audio_url": null,
+  "transcript": null,
+  "asset_url": null,
+  "time_limit_seconds": null,
+  "metadata": {},
+  "questions": []
 }
 ```
 
-每个 `question`:
+每道题：
 
-```jsonc
+```json
 {
-  "id": "cam18-t1-p2-q14",                  // 全局唯一,q 后是原卷题号(P2 接 P1),见 §3.1
-  "unit_id": "cam18-test1-reading-p2",      // == 所属 unit.id
-  "question_number": 1,                      // 本 unit 内从 1 连续递增(≠ id 里的原卷题号)
-  "question_type": "multiple_choice",        // 只有 6 种,见 §4
-  "question_text": "What is the main purpose of ...?",
-  "options": ["...", "...", "...", "..."],   // 选择类必填;填空/简答/主观填 null
+  "id": "stable-question-id",
+  "unit_id": "stable-local-id",
+  "question_number": 1,
+  "question_type": "multiple_choice|true_false_not_given|sentence_completion|short_answer|writing_task|speaking_response",
+  "question_text": "非空题干",
+  "options": null,
   "answer_key": {
-    "answers": ["..."],                      // 见 §4 规则
-    "caseSensitive": false,                  // 填空默认 false
-    "acceptedAlternatives": ["..."]          // 可选:同义 / 拼写变体
+    "answers": [],
+    "caseSensitive": false,
+    "acceptedAlternatives": []
   },
-  "explanation": "解析……",                  // 可为 null,尽量给
-  "metadata": {
-    "ieltsNumber": 14,                       // ★ 原卷题号(app 内部重新从 1 编号,原题号存这里)
-    "ieltsType": "matching_information",      // ★ 原始 IELTS 题型(映射前)
-    "assetUrl": null                         // ★ question 级参考图(听力地图);没有则省略或 null
-  }
+  "explanation": null,
+  "metadata": {}
 }
 ```
 
-### 3.1 命名规范(★ cam18 已定,cam19+ 必须沿用)
+`PracticeUnit` 必须有 `questions`，且 `question_number` 在本 unit 内从 1 连续递增。`unit_id` 必须等于 unit 的 `id`，所有 id 在本批内容内唯一。不要为了满足格式虚构题干、答案、出处、作者、许可或审核日期。缺少信息时仅输出待审核草稿，在 `metadata.needsReview` 中列明缺口；缺必要答案的客观题不是合格可导入内容，不能把空答案当作通过。
 
-cam18 全 4 套题已按下表落地。**新书必须逐字沿用这套模式**,只把 `cam18`/`t1` 换成对应书号和 test 号,否则前端关联和一致性测试会对不上。
+### 既有 Cambridge ID 约定
 
-**Unit `id`** — `{book}-test{n}-{skill}[-{part}]`(`part` 只有阅读/听力有):
+此约定仅用于维护既有内容关联，不授权抽取新书或发布版权资源：unit 沿用 `{book}-test{n}-{skill}[-p{k}]`，question 沿用 `{book}-t{n}-{seg}-q{k}`（阅读 `p1/p2/p3`，听力 `l1/l2/l3/l4`，写作 `writing`，口语 `speaking`）。question ID 的 `q{k}` 使用原卷连续题号，`question_number` 使用 unit 内序号；原卷题号/题型放 `metadata.ieltsNumber` / `metadata.ieltsType`。不要改已有 ID 来“统一格式”。新 ID、slug 和数据库 UUID/`external_key` 映射由维护者审核，不由模型猜造。
 
-| skill | unit id 模式 | 示例 |
-|---|---|---|
-| reading | `{book}-test{n}-reading-p{1..3}` | `cam18-test1-reading-p2` |
-| listening | `{book}-test{n}-listening-p{1..4}` | `cam18-test1-listening-p2` |
-| writing | `{book}-test{n}-writing` | `cam18-test1-writing` |
-| speaking | `{book}-test{n}-speaking` | `cam18-test1-speaking` |
+### 题型和答案
 
-**Question `id`** — `{book}-t{n}-{seg}-q{k}`。⚠️ **`k` 用的是原卷题号,不是 unit 内序号**:阅读 P2 接着 P1 往下编(P1 是 q1–q13,P2 就从 `-q14` 起),听力 L2 接着 L1(L1 q1–q10,L2 从 `-q11` 起)。而 JSON 里的 `question_number` 字段仍是**每个 unit 内从 1 重编**——两者不一样,别混。`seg` 段码按 skill 固定:
+| 原始题型 | 当前类型 | 规则 |
+| --- | --- | --- |
+| Multiple choice、matching、heading、map/plan labeling | `multiple_choice` | `options` 是完整候选文本；`answers` 必须是候选文本，不是字母 |
+| True/False/Not Given、Yes/No/Not Given | `true_false_not_given` | `options` 为 `True`、`False`、`Not Given`，答案使用完整词 |
+| sentence/summary/note/table/form completion | `sentence_completion` | `options: null`，答案至少一项；合理拼写变体放 `acceptedAlternatives` |
+| short answer | `short_answer` | `options: null`，答案至少一项 |
+| writing task / CET 汉译英 | `writing_task` | `options: null`，`answers: []`；翻译用 `skill: translation`、`material_type: translation_prompt` 和 `metadata.cetTask: translation` |
+| speaking cue/response | `speaking_response` | `options: null`，`answers: []`，只提供人工复盘提示 |
 
-| skill | seg 段码 | question id 示例(注意 q 后是原卷题号) |
-|---|---|---|
-| reading | `p1` / `p2` / `p3` | `cam18-t1-p1-q1`、`cam18-t1-p2-q14`、`cam18-t1-p3-q27` |
-| listening | `l1` / `l2` / `l3` / `l4` | `cam18-t1-l1-q1`、`cam18-t1-l2-q11`、`cam18-t1-l2-q15` |
-| writing | `writing` | `cam18-t1-writing-q1` |
-| speaking | `speaking` | `cam18-t1-speaking-q1` |
+选择题的 `options` 至少两项且互不相同，每个答案都必须能在选项中找到。主观题不填“标准答案”来伪造自动评分；参考范文如获授权可以放在受控 metadata，但不能声称是唯一答案或官方评分。
 
-> 两个「不同名」要记牢:(1) unit id 用全称 `test1`+`reading`,question id 用缩写 `t1`+段码 `p2`;(2) question id 的 `-q{k}` 是原卷连续题号,而 JSON `question_number` 字段是 unit 内从 1 重编。都是 cam18 既定事实,别去统一。
+## 2. 抽取流程
 
-**Slug** — 人类可读且全局唯一:`{skill}-{book}-t{n}-{topic-kebab}`,如 `reading-cam18-t1-forest-management`、`writing-cam18-t1-electricity-bar`。
+### 2.0 PDF 的安全预处理边界
 
-**资源文件路径** — 前端直接引用的本地路径(与 Storage 路径二选一,见 §5):
+不要使用 Claude Code 的文件读取工具直接打开 PDF、音频、压缩包或其他二进制文件；即使指定很小的行数限制，PDF 也可能作为完整 document/base64 返回并写入会话历史。一次错误的二进制读取可能超过 API 的单个 tool output 上限；仓库代码无法修复已经损坏的外部会话，因此应新开会话并只带入纯文本片段。
 
-| 类型 | 路径模式 | 示例 |
-|---|---|---|
-| 听力音频 | `/audio/{book}/t{n}-p{1..4}.mp3` | `/audio/cam18/t2-p1.mp3` |
-| 写作图表 | `/images/{book}/t{n}-writing-task1.jpg` | `/images/cam18/t1-writing-task1.jpg` |
-| 听力地图 | `/images/{book}/t{n}-listening-p{n}-map.jpg` | `/images/cam18/t2-listening-p2-map.jpg` |
-| 图表前后对比 | `/images/{book}/t{n}-writing-task1-{before,after}.jpg` | `/images/cam18/t3-writing-task1-before.jpg` |
+对已获内部处理许可的本地 PDF，先在本机运行离线预处理器：
 
----
-
-## 4. 题型映射 + 答案键规则(**产出必须能过 `practice-session-content-integrity` 测试**)
-
-本项目只有 6 种 `question_type`。IELTS 的各种题型要映射过来:
-
-| IELTS 原题型 | 映射到 | options | answer_key.answers |
-|---|---|---|---|
-| Multiple choice | `multiple_choice` | 选项**完整文本** | 命中的**完整选项原文** |
-| Matching(heading/info/feature) | `multiple_choice` | 各候选项完整文本(可带字母前缀) | 命中的完整选项原文 |
-| True/False/Not Given、Yes/No/NG | `true_false_not_given` | `["True","False","Not Given"]` | 其中之一(整词) |
-| Map / plan / diagram labeling | `multiple_choice`(候选标签作 options) | 候选标签文本 | 命中的标签原文 |
-| Sentence / summary / note / table / form completion | `sentence_completion` | `null` | 接受的答案文本 |
-| Short answer | `short_answer` | `null` | 接受的答案文本 |
-| Writing Task 1 / Task 2 | `writing_task` | `null` | `[]`(留空,人工/AI 批改) |
-| Speaking 各 part | `speaking_response` | `null` | `[]` |
-
-**硬性规则(测试会挡):**
-
-- **选择类**(`multiple_choice` / `true_false_not_given`):`options` 非 null、≥2 且互不相同;`answer_key.answers` 每一项都必须**等于某个 option 的原文**(用 app 的 `isPracticeAnswerCorrect` 归一化:去首尾空格、多空格并一、默认不分大小写)。答案存**完整文本**,不要只存 `A`/`B`。多选题就放多个。
-- **填空/简答**(`sentence_completion` / `short_answer`):`options` 必须是 `null`;`answers` 至少一条、非空;拼写/同义变体放 `acceptedAlternatives`。
-- **主观**(`writing_task` / `speaking_response`):`options` = `null`;`answer_key.answers` = `[]`。
-- **通用**:`id` 全局唯一、`question_text` 非空;`asset_url` / `metadata.assetUrl` 若给则为非空字符串。
-
-产出后跑 `npm test`;`src/lib/__tests__/practice-session-content-integrity.test.ts` 会自动挡下「答案对不上选项、缺答案、图 URL 空串」等录入错误。
-
----
-
-## 5. 图片 / 音频存储
-
-现在有两条路,cam18 走了 A,长期目标是 B。**cam19+ 先跟 cam18 保持一致(A),等版权方案定了再统一迁移。**
-
-**A. 本地 `public/`(cam18 现状,最省事)**
-- 文件放 `public/images/{book}/`、`public/audio/{book}/`;`asset_url` / `assetUrl` / `audio_url` 直接填 `/images/...`、`/audio/...`(见 §3.1 路径表)。
-- `MaterialPane` / `AnswerSheet` 拿到这种路径直接渲染,零额外配置。
-- ⚠️ **版权隐患**:Cambridge 原始音视频/图落在 `public/` 且**未 gitignore**,一旦 `git add` 就会公开提交。cam18 目前正是这个待处理状态。
-
-**B. Supabase 私有桶 `practice-assets`(版权安全,目标态)**
-- 文件传私有桶(不进 git、默认要登录才能取);`asset_url` / `assetUrl` 存**对象路径**(如 `cam18/t1-writing-task1.jpg`)。
-- 前端由 server 端换成带时效的 **signed URL** 再渲染(该解析钩子尚未落地)。
-- 和现在 gitignore 掉 `/raw/` 的做法一致。
-
-**通用**:抠出来的 Cambridge 图/音**别放公开桶**;给 AI 批改留路——写作 Task1 的图要能被取回喂给 vision 模型,所以存成可取的对象,别只做纯静态贴图。
-
----
-
-## 6. 完整示例
-
-```jsonc
-// 阅读单元(节选:1 道选择 + 1 道判断)
-{
-  "id": "cam18-test1-reading-p1", "slug": "reading-cam18-t1-green-roofs",
-  "skill": "reading", "mode": "challenge", "title": "Cambridge 18 · Test 1 · Reading P1",
-  "description": "Green roofs", "difficulty": "hard", "material_type": "passage",
-  "passage_text": "……段落 1……\n\n……段落 2……", "audio_url": null, "transcript": null,
-  "asset_url": null, "time_limit_seconds": 1200, "metadata": { "source": "剑桥雅思18.pdf" },
-  "questions": [
-    {
-      "id": "cam18-t1-p1-q1", "unit_id": "cam18-test1-reading-p1", "question_number": 1,
-      "question_type": "multiple_choice",
-      "question_text": "What is the main purpose of the first paragraph?",
-      "options": ["To describe the equipment on roofs", "To introduce a changing view of rooftops",
-                  "To argue all roofs should be gardens", "To compare waterproofing materials"],
-      "answer_key": { "answers": ["To introduce a changing view of rooftops"], "caseSensitive": false },
-      "explanation": "首段对比传统与新观点。",
-      "metadata": { "ieltsNumber": 1, "ieltsType": "multiple_choice" }
-    },
-    {
-      "id": "cam18-t1-p1-q2", "unit_id": "cam18-test1-reading-p1", "question_number": 2,
-      "question_type": "true_false_not_given",
-      "question_text": "Green roofs were first developed in Germany.",
-      "options": ["True", "False", "Not Given"],
-      "answer_key": { "answers": ["Not Given"], "caseSensitive": false },
-      "explanation": "文中未提起源国。", "metadata": { "ieltsNumber": 8, "ieltsType": "true_false_not_given" }
-    }
-  ]
-}
+```bash
+npm run extract:document-text -- --input "D:\\private\\source.pdf" --output-dir "D:\\private\\cet-extracted"
 ```
 
-```jsonc
-// 写作 Task 1（带参考图表）
-{
-  "id": "cam18-test1-writing", "slug": "writing-cam18-t1-electricity-bar",
-  "skill": "writing", "mode": "challenge", "title": "Cambridge 18 · Test 1 · Writing Task 1",
-  "description": null, "difficulty": "hard", "material_type": "writing_prompt",
-  "passage_text": null, "audio_url": null, "transcript": null,
-  "asset_url": "/images/cam18/t1-writing-task1.jpg",   // ★ 图表,MaterialPane 会渲染
-  "time_limit_seconds": 1200,
-  "metadata": { "source": "剑桥雅思18.pdf", "taskType": "task_1", "wordTarget": 150,
-                "prompt": "The chart below shows ... Summarise the information ..." },
-  "questions": [
-    { "id": "cam18-t1-writing-q1", "unit_id": "cam18-test1-writing", "question_number": 1,
-      "question_type": "writing_task",
-      "question_text": "Summarise the information by selecting and reporting the main features.",
-      "options": null, "answer_key": { "answers": [] }, "explanation": null,
-      "metadata": { "ieltsNumber": 1, "ieltsType": "writing_task_1" } }
-  ]
-}
+输出目录必须是仓库外的私有目录，或被忽略的 `/raw/` 子目录。脚本只调用本机 `pdfinfo`/`pdftotext`，不会联网、上传、打印 PDF、base64、全文或完整 manifest；终端只显示文本字符数、manifest 路径和审核提醒。若本机没有 Poppler，请先安装并确认 `pdfinfo` 与 `pdftotext` 可执行，不要改用把 PDF 编码后传入对话的办法。
+
+提取成功后，只读取 `.txt`、MinerU Markdown 或 `content_list.json` 的有页码/顺序的小段。每个送入模型的片段建议控制在 1–2 MB 对话安全预算以内，并保留页码边界；完整 draft 写入私有/忽略目录，不把全文打印到终端。脚本生成的 manifest 只用于追踪路径、hash、大小和审核状态，不代表 OCR 正确或取得版权许可。
+
+随后按以下步骤继续：
+
+1. 只处理已获内部使用授权的 passage/section，记录来源标识、页码和权限状态，不把机密值写进公开输出。
+2. 让 OCR 工具输出 markdown、`content_list.json` 和图片文件名；用页码、题号和版面相邻关系建立图与题的映射，不凭文件名猜测。
+3. 先输出 JSON 草稿和 `needsReview` 清单，再由人工逐题核对题号、换行、选项、答案和图片归属。模型不能证明 OCR 正确，也不能证明版权许可。
+4. 完整材料保留段落和换行。学生历史的旧 400 字符摘要策略不是材料抽取规则；本轮历史回答的保存上限也不能套到题库全文。若输入超过模型/OCR 容量，按有页码和顺序的片段处理并人工合并核对，不静默截断或生成缺失原文。
+5. 图片映射沿用当前契约：整份任务的图用 `unit.asset_url`，某题的图用 `question.metadata.assetUrl`；无图时 unit 填 `null`、question 省略 `assetUrl`（不填空字符串）。未确认许可或私有路径解析未实现时，URL 保持 `null`/省略，并在 `metadata.needsReview` 标注 `asset-rights`/`asset-resolver`，受控对象路径只作为内部审核引用。不要让私有对象名假装是可直接渲染的 `/images/...` 或 `/audio/...` URL。
+6. 审核通过后才由维护者决定是否创建新的、可追踪的内容迁移。不要重写、重生成或直接手改历史 `supabase/migrations/0002_seed_practice_samples.sql`，不要运行旧 seed 上传脚本。
+7. 内容更新应产生新的版本/迁移，保留来源和审核记录；不得把审阅草稿当成已经部署或已经公开的内容。
+
+## 3. 资源与媒体声明
+
+- 版权图表/地图/音频默认按私有受控资源处理。私有 bucket + signed URL 是访问控制方案，不是许可来源；signed URL 也不等于允许下载、模型训练或再分发。
+- 浏览器 TTS 与占位音轨必须区分：当前 CET 合成听力使用 `audio_url: null`、`metadata.syntheticSpeech: true`；现有占位提示音使用 `metadata.audioStatus: placeholder-tone`，没有英语朗读。不要给占位音轨套 TTS 标记。两者都不是官方录音或真人录音。
+- 私有对象路径目前不能假装是浏览器可用的 URL：当前尚无已验收的 signed URL 解析链路。记录为内部审核引用；生产 URL 保持 `null`，直到解析、安全和许可都验证。
+- 临时麦克风录音是学生浏览器内存对象，不是内容抽取资源，不随 history 自动上传；不得拿它作为真实音频素材。
+- 不在本 prompt 中设计 AI 自动评分。写作、翻译、口语可提供人工 rubric、自评和复盘提示，但不生成官方 Band、学生效果或能力诊断。
+
+## 4. 内容审核清单
+
+- [ ] 来源、页码/section、处理日期和权限负责人有内部记录。
+- [ ] 原文与 OCR 逐段核对，题号连续，unit/question id 稳定且唯一。
+- [ ] 每道选择题答案是完整选项文本；填空/简答答案非空；主观题答案为空。
+- [ ] 完整材料和换行无静默截断；缺失内容没有靠模型生成补齐。
+- [ ] 图、音频和 transcript 与题号对应；未获许可的资源没有公开 URL。
+- [ ] `metadata` 不虚构作者、许可证、审核日期、官方身份或学生效果。
+- [ ] 人工审核者确认后才进入版本控制/迁移流程；没有直接重写 `0002`。
+- [ ] 通过内容完整性测试后，仍把数据库、RLS、部署 artifact 和真实浏览器验收单独记录。
+
+## 5. 维护者的离线内容检查
+
+内容经过授权并进入对应 fixture 后，可运行定向检查（本文不表示它们已执行）：
+
+```bash
+npx vitest run src/lib/__tests__/practice-session-samples.test.ts src/lib/__tests__/practice-session-content-integrity.test.ts
+npx vitest run src/lib/__tests__/cet-practice-samples.test.ts src/lib/__tests__/cet-seed-sync.test.ts
 ```
 
----
+这些测试只检查被导入的仓库样例，不会自动读取刚生成的任意 JSON，也不能验证版权、答案事实或 PostgreSQL 执行。需要更新内容时新建经审核的增量迁移；不要为让 seed 一致性测试变绿而重写已发布的 `0002` 或其他旧迁移。
 
-## 7. 校验清单
-
-1. `npx tsc --noEmit` — 类型对得上。
-2. `npm test` — 尤其 `practice session sample fixtures` + `practice session content integrity` 全绿。
-3. 抽检:选择题答案是否是原文选项;`question_number` 从 1 连续;`unit_id` 一致;图 URL 填对。
-
----
-
-## 8. 可复制 Prompt
-
-> 把下面整段连同 MinerU 的 `content_list.json`(或 markdown)+ `images/` 文件名清单一起发给模型。
+## 6. 可复制的模型 Prompt
 
 ```text
-你是 IELTS 题库结构化助手。我给你一段 Cambridge IELTS 真题(来自 MinerU OCR 的 content_list.json /
-markdown)以及抽出的图片文件名清单。请把「一个 passage / section」转成一个 PracticeUnit JSON,严格遵守:
+你是内容结构化助手。我会提供一段已获内部处理许可的材料和题目 OCR。只输出一个 PracticeUnit JSON 草稿，将待审核事项放在 metadata.needsReview；不输出 SQL，不生成迁移，不声称已部署，不声称拥有版权。
 
-【输出】只输出一个 JSON(或 JSON 数组),不要解释性文字。字段和取值必须完全匹配:
-- PracticeUnit: id, slug, skill(foundation|reading|listening|writing|speaking), mode(basic|progressive|
-  challenge), title, description|null, difficulty(easy|medium|hard), material_type(none|passage|audio|
-  writing_prompt|speaking_prompt|foundation_note), passage_text|null, audio_url|null, transcript|null,
-  asset_url|null, time_limit_seconds|null, metadata(对象), questions[]。
-- PracticeQuestion: id, unit_id(==unit.id), question_number(本 unit 内从 1 连续递增),
-  question_type(multiple_choice|true_false_not_given|sentence_completion|short_answer|writing_task|
-  speaking_response), question_text, options(string[]|null), answer_key{answers:string[],
-  caseSensitive?:boolean, acceptedAlternatives?:string[]}, explanation|null, metadata(对象)。
+严格使用：
+- skill: foundation|reading|listening|writing|speaking|translation
+- mode: basic|progressive|challenge
+- difficulty: easy|medium|hard
+- material_type: none|passage|audio|writing_prompt|translation_prompt|speaking_prompt|foundation_note
+- question_type: multiple_choice|true_false_not_given|sentence_completion|short_answer|writing_task|speaking_response
 
-【题型映射】matching/heading/map-labeling → multiple_choice(候选项作 options);T/F/NG、Y/N/NG →
-true_false_not_given(options=["True","False","Not Given"]);sentence/summary/note/table/form completion →
-sentence_completion(options=null);short answer → short_answer(options=null);Writing → writing_task;
-Speaking → speaking_response。
+PracticeUnit 必须含 exam（ielts|cet4|cet6）、id、slug、skill、mode、title、description|null、difficulty、material_type、passage_text|null、audio_url|null、transcript|null、asset_url|null、time_limit_seconds|null、metadata、questions。每题必须含 id、unit_id（等于 unit.id）、question_number（本 unit 从 1 连续）、question_type、question_text、options、answer_key、explanation|null、metadata。
 
-【答案键规则】
-- 选择类:options 非 null、≥2、互不相同;answers 每项必须等于某个 option 的完整原文(不要只写字母);多选放多项。
-- 填空/简答:options=null;answers 至少一条且非空;拼写/同义变体放 acceptedAlternatives;caseSensitive 一般 false。
-- 主观(writing_task/speaking_response):options=null;answer_key.answers=[]。
+题型规则：选择题 options 至少两个且互不相同，answer_key.answers 必须是完整候选文本；判断题 options 固定为 ["True","False","Not Given"]；填空/简答 options 必须为 null 且 answers 至少一项；写作/口语 options 为 null 且 answers 为 []。不要把字母代号当答案。不要杜撰未知答案、作者、许可、日期、官方分数、学生效果或唯一范文。
 
-【图片】写作 Task1 的图表/流程图/地图 → 填 unit.asset_url(用我给的图片文件名或其 Storage 路径);
-听力/阅读某道题的地图/示意图 → 填该 question.metadata.assetUrl;没有图就填 null / 省略。
+完整材料保留换行，不静默截断；超过处理容量时在 metadata.needsReview 标明缺口，等待分段处理，不能生成缺失原文。图片/音频未确认许可和可用解析链路时，URL 填 null，受控路径只作内部审核引用。TTS 与 placeholder-tone 分开标明：后者没有英语朗读，前者不是真人或官方录音。不要设计 AI 自动评分。缺少客观题答案时不猜答案，输出待审核草稿，不能称为可导入数据。CET 汉译英使用 translation / translation_prompt / writing_task，并填 metadata.cetTask=translation。
 
-【元数据】metadata.source 填 PDF 名;每题 metadata.ieltsNumber 存原卷题号、metadata.ieltsType 存原始 IELTS 题型。
-
-【命名】(必须逐字沿用 cam18 既定模式,只换书号/test 号)
-- unit id:{book}-test{n}-{skill}[-p{k}],如 cam18-test1-reading-p2 / cam18-test1-writing / cam18-test1-listening-p4。
-- question id:{book}-t{n}-{seg}-q{k},seg 段码:阅读 p1/p2/p3、听力 l1/l2/l3/l4、写作 writing、口语 speaking。
-  ⚠️ q{k} 用原卷连续题号(阅读 P2 接 P1:P1=q1–13 则 P2 从 q14;听力 L2 接 L1),而 JSON question_number 字段是 unit 内从 1 重编。
-  例:cam18-t1-p1-q1 / cam18-t1-p2-q14 / cam18-t1-l2-q11 / cam18-t1-writing-q1。unit id 用全称、question id 用缩写,别统一。
-- slug:{skill}-{book}-t{n}-{topic},如 reading-cam18-t1-forest-management。
-- 资源路径:图 /images/{book}/t{n}-writing-task1.jpg、/images/{book}/t{n}-listening-p{k}-map.jpg;音频 /audio/{book}/t{n}-p{k}.mp3。
-
-【自检】输出前确认:选择题每个 answer 都能在 options 里找到原文;question_number 从 1 连续;unit_id 一致;
-options 该 null 的为 null;主观题 answers 为 []。
+最后自检：id 唯一、question_number 连续、unit_id 一致、选择题答案可在 options 找到、主观题无自动答案、资源不是空字符串，并列出所有需要人工核对的页码、OCR、答案、许可和部署事项。
 ```

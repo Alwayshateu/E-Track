@@ -1,7 +1,18 @@
 import { getPracticeAcceptedAnswers, getPracticeAnswerState } from './practice-answer-check';
-import { hasBrowserStorage, safeParseJson } from './practice-session-draft';
+import {
+  notifyPracticeStorageChange, practiceStorageFailure, practiceStorageSignature,
+  readPracticeStorageJson, writePracticeStorageJson, removePracticeStorageItem,
+  withPracticeStorageMutation, createPracticeStorageToken, scopePracticeStorageKey, type PracticeStorageResult,
+} from './practice-storage';
+import {
+  getPracticeReviewSelfRatedBand, practiceReviewContentSignature, practiceReviewSignature,
+  sanitizePracticeAttemptReview, type PracticeAttemptReview, type PracticeReviewContent,
+} from './practice-review';
+export type { PracticeAttemptReview, PracticeReviewContent } from './practice-review';
+import { isExamType, resolveExam } from './exam-config';
 import type { PracticeReviewReport } from './practice-session-report';
 import type {
+  ExamType,
   PracticeDifficulty,
   PracticeMode,
   PracticeQuestion,
@@ -26,7 +37,29 @@ const PRACTICE_QUESTION_TYPES: PracticeQuestionType[] = [
   'speaking_response',
 ];
 const ATTEMPT_PROMPT_MAX = 240;
-const ATTEMPT_ANSWER_MAX = 400;
+export const PRACTICE_ATTEMPT_ANSWER_LIMIT = 20_000;
+export const PRACTICE_ATTEMPT_TOTAL_ANSWER_LIMIT = 200_000;
+export const PRACTICE_SESSION_HISTORY_EPOCH_KEY = 'ielts-trainer:practice-session:history:clear-epoch';
+
+function historyKey(userId?: string) {
+  return scopePracticeStorageKey(PRACTICE_SESSION_HISTORY_STORAGE_KEY, userId);
+}
+
+function historyEpochKey(userId?: string) {
+  return scopePracticeStorageKey(PRACTICE_SESSION_HISTORY_EPOCH_KEY, userId);
+}
+
+export function validatePracticeAttemptAnswerLimits(answers: { userAnswer: string }[]): PracticeStorageResult<void> {
+  if (answers.some((answer) => answer.userAnswer.length > PRACTICE_ATTEMPT_ANSWER_LIMIT) ||
+    answers.reduce((sum, answer) => sum + answer.userAnswer.length, 0) > PRACTICE_ATTEMPT_TOTAL_ANSWER_LIMIT) {
+    return practiceStorageFailure('limit', '完整答案超过保存上限（每题 20,000 字符、每次 200,000 字符）；输入仍保留，未截断保存。');
+  }
+  return { ok: true, value: undefined };
+}
+
+export class PracticeAnswerLimitError extends Error {
+  readonly reason = 'limit';
+}
 
 /**
  * A compact per-question record of one attempt. Intentionally mirrors the future Supabase
@@ -61,6 +94,8 @@ export function buildPracticeAttemptAnswers({
   questions: PracticeQuestion[];
   answers: Record<string, string>;
 }): PracticeAttemptAnswer[] {
+  const limit = validatePracticeAttemptAnswerLimits(questions.map((question) => ({ userAnswer: answers[question.id] ?? '' })));
+  if (!limit.ok) throw new PracticeAnswerLimitError(limit.error);
   return questions.map((question, index) => {
     const raw = answers[question.id] ?? '';
     const state = getPracticeAnswerState(question, raw, true);
@@ -75,13 +110,20 @@ export function buildPracticeAttemptAnswers({
       questionType: question.question_type,
       prompt: truncate(question.question_text, ATTEMPT_PROMPT_MAX),
       outcome,
-      userAnswer: truncate(raw, ATTEMPT_ANSWER_MAX),
+      userAnswer: raw,
       correctAnswer: outcome === 'manual_review' ? '' : truncate(accepted[0] ?? '', ATTEMPT_PROMPT_MAX),
     };
   });
 }
 
 export type PracticeSessionHistoryEntry = {
+  snapshotVersion?: 2;
+  answerCompleteness?: 'full' | 'legacy-excerpt';
+  review?: PracticeAttemptReview;
+  parentAttemptId?: string;
+  revisionGoal?: string;
+  /** Missing exam on older snapshots means IELTS. */
+  exam?: ExamType;
   id: string;
   unitId: string;
   slug: string;
@@ -127,7 +169,18 @@ export type PracticeSessionHistorySummary = {
   bySkill: PracticeSessionHistorySkillStat[];
 };
 
-const SKILL_ORDER: PracticeSkill[] = ['foundation', 'reading', 'listening', 'writing', 'speaking'];
+const SKILL_ORDER: PracticeSkill[] = ['foundation', 'reading', 'listening', 'writing', 'speaking', 'translation'];
+
+export function filterPracticeSessionHistory(
+  entries: PracticeSessionHistoryEntry[],
+  exam: ExamType | 'all' = 'all',
+  skill: PracticeSkill | 'all' = 'all'
+) {
+  return entries.filter(
+    (entry) => (exam === 'all' || resolveExam(entry.exam) === exam) &&
+      (skill === 'all' || entry.skill === skill)
+  );
+}
 
 /** Build a single history snapshot from a completed session's review report. Pure. */
 export function buildPracticeSessionHistoryEntry({
@@ -137,6 +190,9 @@ export function buildPracticeSessionHistoryEntry({
   recordedAt,
   id,
   answers,
+  review,
+  parentAttemptId,
+  revisionGoal,
 }: {
   unit: PracticeUnit;
   report: PracticeReviewReport;
@@ -144,10 +200,15 @@ export function buildPracticeSessionHistoryEntry({
   recordedAt: number;
   id?: string;
   answers?: Record<string, string>;
+  review?: PracticeAttemptReview;
+  parentAttemptId?: string;
+  revisionGoal?: string;
 }): PracticeSessionHistoryEntry {
   const { score } = report;
+  const exam = resolveExam(unit.exam);
 
   return {
+    exam,
     id: id ?? `${unit.id}:${recordedAt}`,
     unitId: unit.id,
     slug: unit.slug,
@@ -166,26 +227,22 @@ export function buildPracticeSessionHistoryEntry({
     objectiveTotal: score.objectiveTotal,
     accuracy: score.objectiveTotal > 0 ? score.accuracy : null,
     completionPercent: report.completionPercent,
-    selfRatedBand: report.rubricSummary.averageBand,
+    snapshotVersion: 2,
+    answerCompleteness: answers ? 'full' : 'legacy-excerpt',
+    review: review ? sanitizePracticeAttemptReview(review) : undefined,
+    parentAttemptId,
+    revisionGoal,
+    selfRatedBand: review ? getPracticeReviewSelfRatedBand(exam, review) : exam === 'ielts' ? report.rubricSummary.averageBand : null,
     answers: answers ? buildPracticeAttemptAnswers({ questions: unit.questions, answers }) : undefined,
   };
 }
 
-/** Two attempts describe the "same" outcome — used to avoid duplicate records from reloads/re-renders. */
+/** Compatibility name: identity, never scores, determines whether a submission is repeated. */
 export function isSamePracticeAttemptSignature(
   a: PracticeSessionHistoryEntry,
   b: PracticeSessionHistoryEntry
 ) {
-  return (
-    a.unitId === b.unitId &&
-    a.answered === b.answered &&
-    a.correct === b.correct &&
-    a.incorrect === b.incorrect &&
-    a.skipped === b.skipped &&
-    a.manualReview === b.manualReview &&
-    a.completionPercent === b.completionPercent &&
-    a.selfRatedBand === b.selfRatedBand
-  );
+  return a.id === b.id;
 }
 
 function isFiniteNumber(value: unknown): value is number {
@@ -219,7 +276,7 @@ function sanitizeAttemptAnswers(input: unknown, total: number): PracticeAttemptA
         questionType: answer.questionType as PracticeQuestionType,
         prompt: typeof answer.prompt === 'string' ? truncate(answer.prompt, ATTEMPT_PROMPT_MAX) : '',
         outcome: answer.outcome as PracticeAttemptOutcome,
-        userAnswer: typeof answer.userAnswer === 'string' ? truncate(answer.userAnswer, ATTEMPT_ANSWER_MAX) : '',
+        userAnswer: typeof answer.userAnswer === 'string' ? answer.userAnswer : '',
         correctAnswer:
           typeof answer.correctAnswer === 'string' ? truncate(answer.correctAnswer, ATTEMPT_PROMPT_MAX) : '',
       };
@@ -237,11 +294,14 @@ function sanitizeEntry(input: unknown): PracticeSessionHistoryEntry | null {
     typeof entry.unitId !== 'string' ||
     typeof entry.title !== 'string' ||
     typeof entry.skill !== 'string' ||
+    !SKILL_ORDER.includes(entry.skill) ||
+    (entry.exam !== undefined && entry.exam !== null && !isExamType(entry.exam)) ||
     !isFiniteNumber(entry.recordedAt)
   ) {
     return null;
   }
 
+  const exam = resolveExam(entry.exam);
   const total = isFiniteNumber(entry.total) ? Math.max(0, Math.round(entry.total)) : 0;
   const clampCount = (value: unknown) =>
     isFiniteNumber(value) ? Math.min(total, Math.max(0, Math.round(value))) : 0;
@@ -249,7 +309,22 @@ function sanitizeEntry(input: unknown): PracticeSessionHistoryEntry | null {
     ? Math.min(total, Math.max(0, Math.round(entry.objectiveTotal)))
     : 0;
 
+  const review = entry.review ? sanitizePracticeAttemptReview(entry.review) : undefined;
+  const answers = sanitizeAttemptAnswers(entry.answers, total);
+  if (entry.snapshotVersion === 2 && entry.answerCompleteness === 'full') {
+    if (!Array.isArray(entry.answers) || !answers || entry.answers.length !== total || answers.length !== total ||
+      new Set(answers.map((answer) => answer.questionId)).size !== total ||
+      entry.answers.some((answer) => typeof answer.userAnswer !== 'string')) throw new Error('完整答案快照不完整，未截断或覆盖。');
+    const limit = validatePracticeAttemptAnswerLimits(entry.answers);
+    if (!limit.ok) throw new PracticeAnswerLimitError(limit.error);
+  }
   return {
+    snapshotVersion: entry.snapshotVersion === 2 ? 2 : undefined,
+    answerCompleteness: entry.snapshotVersion === 2 && entry.answerCompleteness === 'full' ? 'full' : 'legacy-excerpt',
+    review,
+    parentAttemptId: typeof entry.parentAttemptId === 'string' ? entry.parentAttemptId : undefined,
+    revisionGoal: typeof entry.revisionGoal === 'string' ? entry.revisionGoal : undefined,
+    exam,
     id: typeof entry.id === 'string' && entry.id ? entry.id : `${entry.unitId}:${entry.recordedAt}`,
     unitId: entry.unitId,
     slug: typeof entry.slug === 'string' ? entry.slug : entry.unitId,
@@ -275,13 +350,13 @@ function sanitizeEntry(input: unknown): PracticeSessionHistoryEntry | null {
     completionPercent: isFiniteNumber(entry.completionPercent)
       ? Math.min(100, Math.max(0, Math.round(entry.completionPercent)))
       : 0,
-    selfRatedBand:
-      entry.selfRatedBand === null || entry.selfRatedBand === undefined
+    selfRatedBand: review ? getPracticeReviewSelfRatedBand(exam, review) :
+      exam !== 'ielts' || entry.selfRatedBand === null || entry.selfRatedBand === undefined
         ? null
         : isFiniteNumber(entry.selfRatedBand)
           ? Math.min(9, Math.max(0, Math.round(entry.selfRatedBand * 10) / 10))
           : null,
-    answers: sanitizeAttemptAnswers(entry.answers, total),
+    answers,
   };
 }
 
@@ -337,6 +412,7 @@ export function summarizePracticeSessionHistory(
   }
 
   const bandValues = ascending
+    .filter((entry) => resolveExam(entry.exam) === 'ielts')
     .map((entry) => entry.selfRatedBand)
     .filter((band): band is number => band !== null);
 
@@ -355,7 +431,7 @@ export function summarizePracticeSessionHistory(
 
   return {
     totalAttempts: entries.length,
-    sessionsPracticed: new Set(entries.map((entry) => entry.unitId)).size,
+    sessionsPracticed: new Set(entries.map((entry) => `${resolveExam(entry.exam)}:${entry.unitId}`)).size,
     totalStudySeconds: entries.reduce((sum, entry) => sum + entry.elapsedSeconds, 0),
     latestAccuracy,
     bestAccuracy: accuracyValues.length ? Math.max(...accuracyValues) : null,
@@ -392,45 +468,164 @@ export function computePracticeStudyStreak(
   return streak;
 }
 
-export function readPracticeSessionHistory(): PracticeSessionHistoryEntry[] {
-  if (!hasBrowserStorage()) return [];
-
-  return sanitizePracticeSessionHistory(
-    safeParseJson<unknown>(window.localStorage.getItem(PRACTICE_SESSION_HISTORY_STORAGE_KEY))
-  );
-}
-
-export function writePracticeSessionHistory(entries: PracticeSessionHistoryEntry[]) {
-  if (!hasBrowserStorage()) return;
-
-  window.localStorage.setItem(
-    PRACTICE_SESSION_HISTORY_STORAGE_KEY,
-    JSON.stringify(entries.slice(0, PRACTICE_SESSION_HISTORY_LIMIT))
-  );
-}
-
-/**
- * Append a completed-session snapshot. Skips writing when the newest stored entry describes the
- * same outcome (guards against reload/re-render double-fires). Returns the updated newest-first list.
- */
-export function appendPracticeSessionHistoryEntry(
-  entry: PracticeSessionHistoryEntry
-): PracticeSessionHistoryEntry[] {
-  const current = readPracticeSessionHistory();
-  const newest = current[0];
-
-  if (newest && isSamePracticeAttemptSignature(newest, entry)) {
-    return current;
+export function readPracticeSessionHistoryResult(userId?: string): PracticeStorageResult<PracticeSessionHistoryEntry[]> {
+  const stored = readPracticeStorageJson(historyKey(userId));
+  if (!stored.ok) return stored;
+  if (stored.value === null) return { ok: true, value: [] };
+  if (!Array.isArray(stored.value)) return practiceStorageFailure('corrupt', '本机历史格式损坏，未覆盖原数据。');
+  try {
+    if (stored.value.some((value) => value?.snapshotVersion !== undefined && value.snapshotVersion !== 2)) {
+      return practiceStorageFailure('unsupported', '历史由较新版本创建，当前版本不会覆盖。');
+    }
+    if (stored.value.some((value) => sanitizeEntry(value) === null)) {
+      return practiceStorageFailure('corrupt', '部分本机历史格式损坏，未覆盖原数据。');
+    }
+    return { ok: true, value: sanitizePracticeSessionHistory(stored.value) };
+  } catch (error) {
+    return practiceStorageFailure(error instanceof PracticeAnswerLimitError ? 'limit' : 'corrupt', error instanceof Error ? error.message : '本机历史无法读取。');
   }
+}
 
+/** Compatibility read only. Product code uses the result reader to distinguish failure from empty. */
+export function readPracticeSessionHistory(userId?: string): PracticeSessionHistoryEntry[] {
+  const result = readPracticeSessionHistoryResult(userId);
+  return result.ok ? result.value : [];
+}
+
+export function readPracticeSessionHistoryEpochResult(userId?: string): PracticeStorageResult<string> {
+  const stored = readPracticeStorageJson(historyEpochKey(userId));
+  if (!stored.ok) return stored;
+  if (stored.value === null) return { ok: true, value: '0' };
+  return typeof stored.value === 'string' && stored.value.length > 0
+    ? { ok: true, value: stored.value }
+    : practiceStorageFailure('corrupt', '历史清理标记无法读取；不会重新创建旧记录。');
+}
+
+/** Caller must hold withPracticeStorageMutation's global lock. */
+function writeHistoryLocked(entries: PracticeSessionHistoryEntry[], userId?: string): PracticeStorageResult<void> {
+  let normalized: PracticeSessionHistoryEntry[];
+  try {
+    normalized = sanitizePracticeSessionHistory(entries);
+    if (normalized.length !== Math.min(entries.length, PRACTICE_SESSION_HISTORY_LIMIT)) {
+      return practiceStorageFailure('corrupt', '历史记录格式无效，未保存。');
+    }
+  } catch (error) {
+    return practiceStorageFailure(error instanceof PracticeAnswerLimitError ? 'limit' : 'corrupt', error instanceof Error ? error.message : '历史记录格式无效。');
+  }
+  const result = writePracticeStorageJson(historyKey(userId), normalized);
+  if (result.ok) notifyPracticeStorageChange({ kind: 'history', userId, action: 'save' });
+  return result;
+}
+
+/** Strict async writer used by production code. */
+export function writePracticeSessionHistoryResult(entries: PracticeSessionHistoryEntry[], userId?: string): Promise<PracticeStorageResult<void>> {
+  return withPracticeStorageMutation(() => {
+    const current = readPracticeSessionHistoryResult(userId);
+    if (!current.ok) return current;
+    return writeHistoryLocked(entries, userId);
+  });
+}
+
+/** Legacy synchronous facade retained for existing callers/tests. */
+export function writePracticeSessionHistory(entries: PracticeSessionHistoryEntry[]) {
+  if (typeof window === 'undefined' || !window.localStorage) throw new Error('本机存储不可用。');
+  const current = readPracticeSessionHistoryResult();
+  if (!current.ok) throw new Error(current.error);
+  const result = writeHistoryLocked(entries);
+  if (!result.ok) throw new Error(result.error);
+}
+
+export function practiceAttemptSnapshotSignature(entry: PracticeSessionHistoryEntry): string {
+  const { review: _review, selfRatedBand: _band, ...snapshot } = entry;
+  void _review; void _band;
+  return practiceStorageSignature(snapshot);
+}
+
+/** Internal transaction primitive: caller holds the global mutation lock. Never dedupe by score. */
+export function appendPracticeSessionHistoryEntryLocked(
+  entry: PracticeSessionHistoryEntry,
+  expectedEpoch: string,
+  userId?: string,
+): PracticeStorageResult<PracticeSessionHistoryEntry> {
+  const epoch = readPracticeSessionHistoryEpochResult(userId);
+  if (!epoch.ok) return epoch;
+  if (epoch.value !== expectedEpoch) return practiceStorageFailure('conflict', '历史已被清理；旧的待保存练习不会重新出现。请明确开始新练习。');
+  const current = readPracticeSessionHistoryResult(userId);
+  if (!current.ok) return current;
+  let normalized: PracticeSessionHistoryEntry | null;
+  try { normalized = sanitizeEntry(entry); } catch (error) {
+    return practiceStorageFailure(error instanceof PracticeAnswerLimitError ? 'limit' : 'corrupt', error instanceof Error ? error.message : '快照无效。');
+  }
+  if (!normalized) return practiceStorageFailure('corrupt', '快照无效，未保存。');
+  const existing = current.value.find((item) => item.id === normalized!.id);
+  if (existing) {
+    return practiceAttemptSnapshotSignature(existing) === practiceAttemptSnapshotSignature(normalized)
+      ? { ok: true, value: existing }
+      : practiceStorageFailure('conflict', '相同练习身份已有不同快照；不会覆盖已提交答案。');
+  }
+  const next = [normalized, ...current.value].sort((a, b) => b.recordedAt - a.recordedAt).slice(0, PRACTICE_SESSION_HISTORY_LIMIT);
+  if (!next.some((item) => item.id === normalized.id)) return practiceStorageFailure('missing', '这次待保存练习已早于当前 120 条历史保留范围；不会挤掉较新的记录。');
+  const write = writeHistoryLocked(next, userId);
+  return write.ok ? { ok: true, value: normalized } : write;
+}
+
+export function appendPracticeSessionHistoryEntryResult(entry: PracticeSessionHistoryEntry, userId?: string): Promise<PracticeStorageResult<PracticeSessionHistoryEntry>> {
+  return withPracticeStorageMutation(() => {
+    const epoch = readPracticeSessionHistoryEpochResult(userId);
+    return epoch.ok ? appendPracticeSessionHistoryEntryLocked(entry, epoch.value, userId) : epoch;
+  });
+}
+
+/** Legacy synchronous facade retained for existing callers/tests. */
+export function appendPracticeSessionHistoryEntry(entry: PracticeSessionHistoryEntry): PracticeSessionHistoryEntry[] {
+  const current = readPracticeSessionHistory();
+  if (current.some((item) => item.id === entry.id)) return current;
   const next = [entry, ...current].slice(0, PRACTICE_SESSION_HISTORY_LIMIT);
   writePracticeSessionHistory(next);
-
-  return next;
+  return readPracticeSessionHistory();
 }
 
-export function clearPracticeSessionHistory() {
-  if (!hasBrowserStorage()) return;
+export type PracticeReviewBaseline = { revision: number; signature: string };
+export function getPracticeReviewBaseline(review: PracticeAttemptReview | undefined): PracticeReviewBaseline {
+  return { revision: review?.revision ?? 0, signature: practiceReviewSignature(review) };
+}
 
-  window.localStorage.removeItem(PRACTICE_SESSION_HISTORY_STORAGE_KEY);
+/** Internal update-only primitive. The baseline compares content as well as revision across tabs. */
+export function updatePracticeSessionHistoryReviewLocked(
+  id: string, content: PracticeReviewContent, expected: PracticeReviewBaseline, updatedAt = Date.now(), userId?: string,
+): PracticeStorageResult<PracticeSessionHistoryEntry> {
+  const current = readPracticeSessionHistoryResult(userId);
+  if (!current.ok) return current;
+  const entry = current.value.find((item) => item.id === id);
+  if (!entry) return practiceStorageFailure('missing', '这条历史已清除或不在保留范围内；复盘不会把它重新创建。');
+  const baseline = getPracticeReviewBaseline(entry.review);
+  if (baseline.revision !== expected.revision || baseline.signature !== expected.signature) {
+    return practiceStorageFailure('conflict', '其他标签页已更新复盘；当前输入仍保留，未覆盖较新的内容。');
+  }
+  const normalized = sanitizePracticeAttemptReview(content);
+  if (entry.review && practiceReviewContentSignature(entry.review) === practiceReviewContentSignature(normalized)) {
+    return { ok: true, value: entry };
+  }
+  const review: PracticeAttemptReview = { ...normalized, revision: baseline.revision + 1, updatedAt };
+  const updated = { ...entry, review, selfRatedBand: getPracticeReviewSelfRatedBand(entry.exam, review) };
+  const write = writeHistoryLocked(current.value.map((item) => item.id === id ? updated : item), userId);
+  return write.ok ? { ok: true, value: updated } : write;
+}
+
+export function updatePracticeSessionHistoryReview(
+  id: string, content: PracticeReviewContent, expected: PracticeReviewBaseline, userId?: string,
+): Promise<PracticeStorageResult<PracticeSessionHistoryEntry>> {
+  return withPracticeStorageMutation(() => updatePracticeSessionHistoryReviewLocked(id, content, expected, Date.now(), userId));
+}
+
+export function clearPracticeSessionHistory(userId?: string): Promise<PracticeStorageResult<void>> {
+  return withPracticeStorageMutation(() => {
+    const epoch = readPracticeSessionHistoryEpochResult(userId);
+    if (!epoch.ok) return epoch;
+    const advanced = writePracticeStorageJson(historyEpochKey(userId), `${Date.now()}:${createPracticeStorageToken()}`);
+    if (!advanced.ok) return advanced;
+    const cleared = removePracticeStorageItem(historyKey(userId));
+    if (cleared.ok) notifyPracticeStorageChange({ kind: 'history', userId, action: 'clear' });
+    return cleared;
+  });
 }

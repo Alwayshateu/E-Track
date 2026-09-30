@@ -1,6 +1,8 @@
 import { redirect } from 'next/navigation';
 import SettingsView from '../components/SettingsView';
+import ProtectedAccountBoundary from '../components/ProtectedAccountBoundary';
 import { createSupabaseServerClient } from '@/lib/supabase-server';
+import { getPracticePageCatalog } from '@/lib/practice-page-catalog';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,14 +27,19 @@ export default async function SettingsPage() {
     console.error('Settings profile fetch error:', profileError);
   }
 
+  const { catalog } = await getPracticePageCatalog();
+
   return (
-    <div className="variant-settings-shell min-h-[100dvh]">
-      <SettingsView
-        userId={user.id}
-        isAnonymous={user.is_anonymous ?? false}
-        authEmail={user.email ?? null}
-        initialProfile={profile ?? null}
-      />
-    </div>
+    <ProtectedAccountBoundary key={user.id} userId={user.id}>
+      <div className="variant-settings-shell min-h-[100dvh]">
+        <SettingsView
+          catalog={catalog}
+          userId={user.id}
+          isAnonymous={user.is_anonymous ?? false}
+          authEmail={user.email ?? null}
+          initialProfile={profile ?? null}
+        />
+      </div>
+    </ProtectedAccountBoundary>
   );
 }

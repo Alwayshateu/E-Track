@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PassageAnnotation } from '@/lib/types';
 import {
   addAnnotation,
@@ -104,17 +104,83 @@ describe('setRubricRating', () => {
 });
 
 describe('addAnnotation', () => {
-  it('appends with an id derived from paragraph, 1-based position, and a 12-char text prefix', () => {
-    const next = addAnnotation([], annotationInput({ paragraphIndex: 2, text: 'The quick brown fox' }));
-    expect(next).toHaveLength(1);
-    expect(next[0].id).toBe('2-1-The quick br');
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
-  it('increments the position with the existing length', () => {
-    const seed = [annotation({ id: 'x' }), annotation({ id: 'y' })];
-    const next = addAnnotation(seed, annotationInput({ paragraphIndex: 4, text: 'note' }));
-    expect(next).toHaveLength(3);
-    expect(next[2].id).toBe('4-3-note');
+  it('uses the storage token and preserves inputs, existing ids and the annotation shape', () => {
+    const randomUUID = vi.fn(() => 'fresh-id');
+    vi.stubGlobal('crypto', { randomUUID });
+    const legacy = Object.freeze(annotation({ id: '2-1-The quick br' }));
+    const seed = [legacy];
+    const input = Object.freeze(annotationInput({ paragraphIndex: 2, text: 'The quick brown fox' }));
+    const next = addAnnotation(seed, input);
+    expect(next).toEqual([legacy, { ...input, id: 'fresh-id' }]);
+    expect(next[0]).toBe(legacy);
+    expect(next).not.toBe(seed);
+    expect(seed).toEqual([legacy]);
+    expect(randomUUID).toHaveBeenCalledOnce();
+    expect(updateAnnotation(next, legacy.id, { note: 'legacy updated' })[0])
+      .toEqual({ ...legacy, note: 'legacy updated' });
+    expect(removeAnnotation(next, legacy.id)).toEqual([next[1]]);
+  });
+
+  it('does not reuse deleted ids or collide with a surviving annotation of the same text', () => {
+    let serial = 0;
+    vi.stubGlobal('crypto', { randomUUID: () => `token-${++serial}` });
+    const first = addAnnotation([], annotationInput());
+    const second = addAnnotation(first, annotationInput());
+    const afterDeletion = removeAnnotation(second, first[0].id);
+    const third = addAnnotation(afterDeletion, annotationInput());
+    expect(new Set([first[0].id, second[1].id, third[1].id]).size).toBe(3);
+    expect(third[0]).toBe(second[1]);
+    expect(afterDeletion).toEqual([second[1]]);
+  });
+
+  it('keeps same-prefix annotations independently updateable and removable after deletion', () => {
+    let serial = 0;
+    vi.stubGlobal('crypto', { randomUUID: () => `token-${++serial}` });
+    const first = addAnnotation([], annotationInput({ text: 'The quick brown fox' }));
+    const second = addAnnotation(first, annotationInput({ text: 'The quick brown bear' }));
+    const third = addAnnotation(removeAnnotation(second, first[0].id), annotationInput({ text: 'The quick brown bird' }));
+    expect(third[0].id).not.toBe(third[1].id);
+    const updated = updateAnnotation(third, third[1].id, { kind: 'note', note: 'bird only' });
+    expect(updated[0]).toBe(third[0]);
+    expect(updated[1]).toEqual({ ...third[1], kind: 'note', note: 'bird only' });
+    expect(third[1].note).toBeNull();
+    expect(removeAnnotation(updated, updated[1].id)).toEqual([third[0]]);
+    expect(removeAnnotation(updated, updated[0].id)).toEqual([updated[1]]);
+  });
+
+  it('allocates unique ids for consecutive identical additions', () => {
+    let serial = 0;
+    const randomUUID = vi.fn(() => `token-${++serial}`);
+    vi.stubGlobal('crypto', { randomUUID });
+    let current: PassageAnnotation[] = [];
+    for (let i = 0; i < 100; i += 1) current = addAnnotation(current, annotationInput());
+    expect(new Set(current.map(({ id }) => id)).size).toBe(100);
+    expect(randomUUID).toHaveBeenCalledTimes(100);
+  });
+
+  it.each([undefined, {}])('uses the fallback when crypto is %s, even within one millisecond', (crypto) => {
+    vi.stubGlobal('crypto', crypto);
+    vi.spyOn(Date, 'now').mockReturnValue(123456789);
+    vi.spyOn(Math, 'random').mockReturnValue(0.25);
+    const legacy = annotation({ id: '0-1-sample' });
+    let current = [legacy];
+    const allocated: string[] = [];
+    for (let i = 0; i < 100; i += 1) {
+      current = addAnnotation(current, annotationInput());
+      const id = current[current.length - 1].id;
+      expect(id).toEqual(expect.any(String));
+      expect(id.length).toBeGreaterThan(0);
+      expect(id).not.toBe(legacy.id);
+      allocated.push(id);
+      current = removeAnnotation(current, id);
+    }
+    expect(new Set(allocated).size).toBe(100);
+    expect(current).toEqual([legacy]);
   });
 });
 

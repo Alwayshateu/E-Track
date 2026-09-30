@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation';
-import AppQuickNav from '../components/AppQuickNav';
+import AppQuickNav from '../components/AppQuickNavServer';
 import FavoritesView from '../components/FavoritesView';
+import ProtectedAccountBoundary from '../components/ProtectedAccountBoundary';
 import { getCollectionItems } from '@/lib/question-collections';
 import { createSupabaseServerClient } from '@/lib/supabase-server';
 
@@ -22,9 +23,11 @@ export default async function FavoritesPage() {
   if (error) {
     console.error('Error fetching favorites:', error);
     return (
-      <main className="min-h-[100dvh] bg-canvas px-4 py-10 text-center text-ink-muted">
-        加载收藏失败，请稍后重试。
-      </main>
+      <ProtectedAccountBoundary key={user.id} userId={user.id}>
+        <main className="min-h-[100dvh] bg-canvas px-4 py-10 text-center text-ink-muted">
+          加载收藏失败，请稍后重试。
+        </main>
+      </ProtectedAccountBoundary>
     );
   }
 
@@ -34,9 +37,11 @@ export default async function FavoritesPage() {
   }
 
   return (
-    <div className="min-h-[100dvh] bg-canvas">
-      <AppQuickNav />
-      <FavoritesView initialItems={items} degraded={Boolean(partialError)} />
-    </div>
+    <ProtectedAccountBoundary key={user.id} userId={user.id}>
+      <div className="min-h-[100dvh] bg-canvas">
+        <AppQuickNav userId={user.id} />
+        <FavoritesView initialItems={items} degraded={Boolean(partialError)} />
+      </div>
+    </ProtectedAccountBoundary>
   );
 }

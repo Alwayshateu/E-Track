@@ -2,8 +2,8 @@ import type { Metadata, Viewport } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'IELTS Trainer — 个人雅思训练系统',
-  description: '用一个沉浸式、可复盘的训练闭环发现薄弱项并持续提升。',
+  title: 'E-Track — 大学生四六级与雅思英语学习平台',
+  description: 'E 代表 English。E-Track 面向大学生，将四级、六级与雅思的练习、记录和复盘连接起来，为英语学习保驾护航。',
 };
 
 export const viewport: Viewport = {

@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation';
-import AppQuickNav from '../components/AppQuickNav';
+import AppQuickNav from '../components/AppQuickNavServer';
 import WrongBookView from '../components/WrongBookView';
+import ProtectedAccountBoundary from '../components/ProtectedAccountBoundary';
 import { getCollectionItems } from '@/lib/question-collections';
 import { createSupabaseServerClient } from '@/lib/supabase-server';
 
@@ -22,9 +23,11 @@ export default async function WrongBookPage() {
   if (error) {
     console.error('Error fetching wrong book:', error);
     return (
-      <main className="min-h-[100dvh] bg-canvas px-4 py-10 text-center text-ink-muted">
-        加载错题本失败，请刷新重试。
-      </main>
+      <ProtectedAccountBoundary key={user.id} userId={user.id}>
+        <main className="min-h-[100dvh] bg-canvas px-4 py-10 text-center text-ink-muted">
+          加载错题本失败，请刷新重试。
+        </main>
+      </ProtectedAccountBoundary>
     );
   }
 
@@ -34,9 +37,11 @@ export default async function WrongBookPage() {
   }
 
   return (
-    <div className="min-h-[100dvh] bg-canvas">
-      <AppQuickNav />
-      <WrongBookView initialItems={items} degraded={Boolean(partialError)} />
-    </div>
+    <ProtectedAccountBoundary key={user.id} userId={user.id}>
+      <div className="min-h-[100dvh] bg-canvas">
+        <AppQuickNav userId={user.id} />
+        <WrongBookView initialItems={items} degraded={Boolean(partialError)} />
+      </div>
+    </ProtectedAccountBoundary>
   );
 }

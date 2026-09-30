@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 
-// Timeouts only. Offline tests finish in milliseconds; the wider ceiling exists for
+// Offline tests finish in milliseconds; the wider timeout ceiling exists for
 // the RUN_LIVE_SUPABASE_TESTS suites, where each case is several sequential Supabase
 // round trips and the default 5s is too tight under real network latency. Deliberately
 // no env loading here — live suites read NEXT_PUBLIC_* from the ambient environment so
@@ -15,6 +15,21 @@ export default defineConfig({
     },
   },
   test: {
+    // Keep product tests discoverable while avoiding generated reports and browser profiles.
+    exclude: [
+      ...configDefaults.exclude,
+      'paper_rewriting_output/**',
+      'public/reports/**',
+      'raw/**',
+      'playwright-report/**',
+      'test-results/**',
+      '.playwright/**',
+      '.cache/**',
+      'edge-profile/**',
+      'edge-*-profile/**',
+      'playwright-profile*/**',
+      'browser-profile*/**',
+    ],
     testTimeout: 20000,
     hookTimeout: 20000,
   },

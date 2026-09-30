@@ -40,14 +40,37 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-.vercel
-
 # local dev server logs
 .next-dev.log
 .next-dev.err.log
 
-# internal progress reports — served publicly from /public, keep out of the build
-public/reports/
+# Local reports may contain private screenshots and authenticated browser state.
+# Ignore does NOT exclude files from a local Next build or deployment upload;
+# public/reports is served as static content if included in a deployed public/ tree.
+/public/reports/
+/paper_rewriting_output/
 
-# raw Cambridge IELTS source PDFs (copyrighted — do not commit) and their extracted intermediates
+# Browser automation outputs and local caches (preserve existing files on disk).
+/playwright-report/
+/test-results/
+/.playwright/
+/.cache/
+/edge-profile/
+/edge-*-profile/
+/playwright-profile*/
+/browser-profile*/
+
+# Raw copyrighted source PDFs and OCR intermediates; no publication rights implied.
 /raw/
+
+# Local PDF extraction output must remain private and untracked.
+/cet-extracted/
+
+# Local release evidence, writing work, and generated Python caches.
+/docs.zip
+/writing-output/
+/writing-prompts/
+/supabase/migrations/0007_seed_cet_real_exam_review.sql
+/docs/cet-0007-internal-trial-audit-*.md
+**/__pycache__/
+*.pyc

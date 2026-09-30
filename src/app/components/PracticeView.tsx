@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
@@ -20,6 +20,7 @@ import { createSupabaseBrowserClient } from '@/lib/supabase-browser';
 import { formatCategory, formatDifficulty } from '@/lib/question-labels';
 import type { IeltsQuestion } from '@/lib/types';
 import { PRACTICE_SESSIONS_HREF } from '@/lib/practice-session-links';
+import { getPracticeShortcut } from '@/lib/practice-shortcuts';
 import { riseChild, springSnap, springSoft, staggerParent } from './ui/motion-presets';
 
 type AnswerStatus = 'idle' | 'correct' | 'wrong';
@@ -39,26 +40,60 @@ export default function PracticeView({ userId }: { userId: string }) {
   const [userAnswer, setUserAnswer] = useState('');
   const [status, setStatus] = useState<AnswerStatus>('idle');
   const [isFavorited, setIsFavorited] = useState(false);
+  const [favoriteState, setFavoriteState] = useState<'loading' | 'known' | 'error'>('loading');
+  const [favoritePending, setFavoritePending] = useState(false);
+  const [favoriteMessage, setFavoriteMessage] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [wrongBookPending, setWrongBookPending] = useState(false);
+  const [wrongBookError, setWrongBookError] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const questionGeneration = useRef(0);
+  const favoriteOperation = useRef(0);
+  const favoriteBusy = useRef<number | null>(null);
+  const saveBusy = useRef(false);
+  const wrongBookBusy = useRef(false);
+  const savedGeneration = useRef<number | null>(null);
   const [sessionStats, setSessionStats] = useState({ attempts: 0, correct: 0, wrong: 0, streak: 0 });
 
-  const checkIfFavorited = useCallback(async (questionId: string) => {
-    const { data } = await supabase
-      .from('favorites')
-      .select('id')
-      .eq('user_id', userId)
-      .eq('question_id', questionId)
-      .maybeSingle();
-
-    setIsFavorited(Boolean(data));
+  const checkIfFavorited = useCallback(async (questionId: string, generation: number) => {
+    if (generation !== questionGeneration.current || favoriteBusy.current !== null) return;
+    const operation = ++favoriteOperation.current;
+    const current = () => generation === questionGeneration.current && operation === favoriteOperation.current;
+    setFavoriteState('loading');
+    setFavoriteMessage(null);
+    try {
+      const { data, error } = await supabase
+        .from('favorites')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('question_id', questionId)
+        .maybeSingle();
+      if (!current()) return;
+      if (error) throw error;
+      setIsFavorited(Boolean(data));
+      setFavoriteState('known');
+    } catch (error) {
+      if (!current()) return;
+      console.error('Favorite read failed:', error);
+      setFavoriteState('error');
+      setFavoriteMessage('收藏状态加载失败，请重试。');
+    }
   }, [supabase, userId]);
 
   const fetchQuestion = useCallback(async () => {
+    if (saveBusy.current || wrongBookBusy.current) return;
+    const generation = ++questionGeneration.current;
+    favoriteOperation.current += 1;
+    favoriteBusy.current = null;
+    savedGeneration.current = null;
+    setFavoritePending(false);
     setLoadState('loading');
     setStatus('idle');
     setUserAnswer('');
     setIsFavorited(false);
+    setFavoriteState('loading');
+    setFavoriteMessage(null);
+    setWrongBookError(false);
     setMessage(null);
 
     try {
@@ -69,16 +104,18 @@ export default function PracticeView({ userId }: { userId: string }) {
       });
 
       if (error) throw error;
+      if (generation !== questionGeneration.current) return;
 
       if (data && data.length > 0) {
         setQuestion(data[0]);
-        await checkIfFavorited(data[0].id);
         setLoadState('ready');
+        void checkIfFavorited(data[0].id, generation);
       } else {
         setQuestion(null);
         setLoadState('empty');
       }
     } catch (error) {
+      if (generation !== questionGeneration.current) return;
       console.error('Fetch question failed:', error);
       setQuestion(null);
       setLoadState('error');
@@ -90,100 +127,123 @@ export default function PracticeView({ userId }: { userId: string }) {
     void fetchQuestion();
   }, [fetchQuestion]);
 
-  const handleSubmit = useCallback(async () => {
-    if (!question || !userAnswer.trim() || saving || status !== 'idle') return;
+  useEffect(() => () => {
+    questionGeneration.current += 1;
+    favoriteOperation.current += 1;
+  }, []);
 
+  const syncWrongBook = useCallback(async (questionId: string) => {
+    if (wrongBookBusy.current) return;
+    wrongBookBusy.current = true;
+    const generation = questionGeneration.current;
+    setWrongBookPending(true);
+    setMessage(null);
+    try {
+      const { data: exist, error: existError } = await supabase
+        .from('wrong_book').select('id').eq('user_id', userId).eq('question_id', questionId).maybeSingle();
+      if (existError) throw existError;
+      if (!exist) {
+        const { error } = await supabase.from('wrong_book').insert({ user_id: userId, question_id: questionId });
+        if (error && error.code !== '23505') throw error;
+      }
+      if (generation !== questionGeneration.current) return;
+      setWrongBookError(false);
+    } catch (error) {
+      if (generation !== questionGeneration.current) return;
+      console.error('Wrong book sync failed:', error);
+      setWrongBookError(true);
+    } finally {
+      wrongBookBusy.current = false;
+      if (generation === questionGeneration.current) setWrongBookPending(false);
+    }
+  }, [supabase, userId]);
+
+  const handleSubmit = useCallback(async () => {
+    if (!question || loadState !== 'ready' || !userAnswer.trim() || saveBusy.current || wrongBookBusy.current || status !== 'idle' || savedGeneration.current === questionGeneration.current) return;
+    const generation = questionGeneration.current;
+    saveBusy.current = true;
     setSaving(true);
     setMessage(null);
-
+    const submittedQuestionId = question.id;
     const cleanUser = userAnswer.trim().toLowerCase();
-    const cleanCorrect = question.correct_answer.trim().toLowerCase();
-    const isCorrect = cleanUser === cleanCorrect;
-
+    const isCorrect = cleanUser === question.correct_answer.trim().toLowerCase();
     setStatus(isCorrect ? 'correct' : 'wrong');
-
     try {
-      const { error: historyError } = await supabase.from('history').insert({
-        user_id: userId,
-        question_id: question.id,
-        user_answer: userAnswer,
-        is_correct: isCorrect,
+      const { error } = await supabase.from('history').insert({
+        user_id: userId, question_id: submittedQuestionId, user_answer: userAnswer, is_correct: isCorrect,
       });
-
-      if (historyError) throw historyError;
-
-      if (!isCorrect) {
-        const { data: exist, error: existError } = await supabase
-          .from('wrong_book')
-          .select('id')
-          .eq('user_id', userId)
-          .eq('question_id', question.id)
-          .maybeSingle();
-
-        if (existError) throw existError;
-
-        if (!exist) {
-          const { error: wrongBookError } = await supabase.from('wrong_book').insert({
-            user_id: userId,
-            question_id: question.id,
-          });
-
-          if (wrongBookError) throw wrongBookError;
-        }
-      }
-
+      if (error) throw error;
+      if (generation !== questionGeneration.current) return;
+      savedGeneration.current = generation;
       setSessionStats((current) => ({
         attempts: current.attempts + 1,
         correct: current.correct + (isCorrect ? 1 : 0),
         wrong: current.wrong + (isCorrect ? 0 : 1),
         streak: isCorrect ? current.streak + 1 : 0,
       }));
+      if (!isCorrect) await syncWrongBook(submittedQuestionId);
     } catch (error) {
+      if (generation !== questionGeneration.current) return;
       console.error('Submit failed:', error);
       setStatus('idle');
       setMessage('提交失败，请检查网络后重试。');
     } finally {
-      setSaving(false);
+      saveBusy.current = false;
+      if (generation === questionGeneration.current) setSaving(false);
     }
-  }, [question, saving, status, supabase, userAnswer, userId]);
+  }, [loadState, question, status, supabase, syncWrongBook, userAnswer, userId]);
 
   const toggleFavorite = useCallback(async () => {
-    if (!question) return;
-
+    if (!question || loadState !== 'ready' || favoriteState !== 'known' || favoriteBusy.current !== null) return;
+    const generation = questionGeneration.current;
+    const operation = ++favoriteOperation.current;
+    favoriteBusy.current = operation;
+    const current = () => generation === questionGeneration.current && operation === favoriteOperation.current;
     const nextState = !isFavorited;
+    setFavoritePending(true);
     setIsFavorited(nextState);
-    setMessage(null);
-
-    const { error } = nextState
-      ? await supabase.from('favorites').insert({ user_id: userId, question_id: question.id })
-      : await supabase
-          .from('favorites')
-          .delete()
-          .eq('user_id', userId)
-          .eq('question_id', question.id);
-
-    if (error) {
+    setFavoriteMessage(null);
+    try {
+      const { error } = nextState
+        ? await supabase.from('favorites').insert({ user_id: userId, question_id: question.id })
+        : await supabase.from('favorites').delete().eq('user_id', userId).eq('question_id', question.id);
+      if (error && !(nextState && error.code === '23505')) throw error;
+    } catch (error) {
+      if (!current()) return;
       console.error('Favorite toggle failed:', error);
       setIsFavorited(!nextState);
-      setMessage('收藏状态更新失败，请稍后重试。');
+      // A failed response may have followed a committed mutation: read before toggling again.
+      setFavoriteState('error');
+      setFavoriteMessage('收藏状态更新失败，请重新读取收藏状态。');
+    } finally {
+      if (current()) {
+        favoriteBusy.current = null;
+        setFavoritePending(false);
+      }
     }
-  }, [isFavorited, question, supabase, userId]);
+  }, [favoriteState, isFavorited, loadState, question, supabase, userId]);
 
   useEffect(() => {
     const handleKey = (event: KeyboardEvent) => {
-      if (event.key === 'Enter' && status === 'idle' && userAnswer.trim()) {
-        void handleSubmit();
-      }
-
-      if (event.key === ' ' && status !== 'idle') {
+      const target = event.target instanceof Element ? event.target : null;
+      const action = getPracticeShortcut(event, {
+        interactive: Boolean(target?.closest('input, textarea, select, button, a, [contenteditable]:not([contenteditable="false"]), [role="button"], [role="textbox"]')),
+        answerInput: Boolean(target?.matches('input[data-practice-answer]')),
+        ready: loadState === 'ready',
+        saving: saving || wrongBookPending,
+        answered: status !== 'idle',
+        hasAnswer: Boolean(userAnswer.trim()),
+      });
+      if (action) {
         event.preventDefault();
-        void fetchQuestion();
+        if (action === 'submit') void handleSubmit();
+        else void fetchQuestion();
       }
     };
 
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [fetchQuestion, handleSubmit, status, userAnswer]);
+  }, [fetchQuestion, handleSubmit, loadState, saving, status, userAnswer, wrongBookPending]);
 
   if (loadState === 'loading') {
     return <PracticeSkeleton />;
@@ -315,6 +375,20 @@ export default function PracticeView({ userId }: { userId: string }) {
         )}
       </AnimatePresence>
 
+      {favoriteMessage && (
+        <div role="status" className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          <p>{favoriteMessage}</p>
+          {favoriteState === 'error' && (
+            <button type="button" onClick={() => void checkIfFavorited(question.id, questionGeneration.current)} className="mt-2 rounded-full border border-amber-300 px-4 py-2 font-semibold hover:bg-amber-100">
+              重试收藏状态
+            </button>
+          )}
+        </div>
+      )}
+      {(favoritePending || favoriteState === 'loading') && (
+        <p role="status" className="mt-4 text-sm text-ink-subtle">{favoritePending ? '正在更新收藏…' : '正在读取收藏状态…'}</p>
+      )}
+
       <motion.div
         variants={staggerParent(0.06)}
         initial="hidden"
@@ -389,7 +463,10 @@ export default function PracticeView({ userId }: { userId: string }) {
                 <button
                   type="button"
                   onClick={() => void toggleFavorite()}
-                  aria-pressed={isFavorited}
+                  disabled={favoriteState !== 'known' || favoritePending}
+                  aria-pressed={favoriteState === 'known' ? isFavorited : undefined}
+                  aria-busy={favoritePending || favoriteState === 'loading'}
+
                   aria-label={isFavorited ? '取消收藏' : '加入收藏'}
                   className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition-colors active:scale-[0.96] ${
                     isFavorited
@@ -445,6 +522,7 @@ export default function PracticeView({ userId }: { userId: string }) {
                 <label className="block">
                   <span className="mb-2 block text-sm font-semibold text-ink">你的答案</span>
                   <input
+                    data-practice-answer
                     type="text"
                     value={userAnswer}
                     disabled={answered}
@@ -502,7 +580,13 @@ export default function PracticeView({ userId }: { userId: string }) {
                           status === 'correct' ? 'text-emerald-900' : 'text-red-900'
                         }`}
                       >
-                        {status === 'correct' ? '回答正确，记录已保存' : '回答错误，已加入复盘队列'}
+                        {saving || wrongBookPending
+                          ? '正在保存，请稍候…'
+                          : status === 'correct'
+                            ? '回答正确，记录已保存'
+                            : wrongBookError
+                              ? '回答错误，记录已保存；错题本同步失败'
+                              : '回答错误，已加入复盘队列'}
                       </h3>
 
                       <div className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -525,6 +609,21 @@ export default function PracticeView({ userId }: { userId: string }) {
                     </div>
                   </div>
 
+                  {wrongBookError && (
+                    <div className="mt-4 text-sm text-red-900">
+                      <p>作答记录已保存，无需重新提交答案。可以只重试错题本同步。</p>
+                      <button
+                        type="button"
+                        disabled={saving || wrongBookPending}
+                        onClick={() => {
+                          if (!saveBusy.current && status === 'wrong') void syncWrongBook(question.id);
+                        }}
+                        className="mt-2 rounded-full border border-red-200 bg-surface px-4 py-2 font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {wrongBookPending ? '正在同步错题…' : '重试错题同步'}
+                      </button>
+                    </div>
+                  )}
                   <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
                     {status === 'wrong' && (
                       <Link
@@ -537,7 +636,10 @@ export default function PracticeView({ userId }: { userId: string }) {
                     <button
                       type="button"
                       onClick={() => void toggleFavorite()}
-                      className="flex items-center justify-center gap-2 rounded-full border border-line bg-surface px-5 py-3 text-sm font-semibold text-ink-muted transition-colors hover:border-accent/30 hover:text-accent active:scale-[0.98]"
+                      disabled={favoriteState !== 'known' || favoritePending}
+                      aria-pressed={favoriteState === 'known' ? isFavorited : undefined}
+                      aria-busy={favoritePending || favoriteState === 'loading'}
+                      className="flex items-center justify-center gap-2 rounded-full border border-line bg-surface px-5 py-3 text-sm font-semibold text-ink-muted transition-colors hover:border-accent/30 hover:text-accent active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       <Heart size={17} weight={isFavorited ? 'fill' : 'regular'} />
                       {isFavorited ? '已收藏' : '收藏此题'}
@@ -545,7 +647,8 @@ export default function PracticeView({ userId }: { userId: string }) {
                     <button
                       type="button"
                       onClick={() => void fetchQuestion()}
-                      className="flex items-center justify-center gap-2 rounded-full bg-ink px-5 py-3 text-sm font-semibold text-white transition-all duration-200 hover:-translate-y-0.5 hover:bg-zinc-800 active:scale-[0.98]"
+                      disabled={saving || wrongBookPending}
+                      className="flex items-center justify-center gap-2 rounded-full bg-ink px-5 py-3 text-sm font-semibold text-white transition-all duration-200 hover:-translate-y-0.5 hover:bg-zinc-800 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       下一题 (Space)
                       <ArrowRight size={17} weight="bold" />

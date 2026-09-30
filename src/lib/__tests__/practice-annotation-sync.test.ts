@@ -151,17 +151,33 @@ describe('mapRemoteAnnotationRow', () => {
 });
 
 describe('annotationsSignature', () => {
-  it('ignores ids and ordering', () => {
+  it('ignores ordering but includes persisted client ids', () => {
     const a = annotation({ id: 'first' });
     const b = annotation({ id: 'second', paragraphIndex: 1, startOffset: 0, endOffset: 3, text: 'the' });
     expect(annotationsSignature([a, b])).toBe(annotationsSignature([b, a]));
-    expect(annotationsSignature([annotation({ id: 'x' })])).toBe(annotationsSignature([annotation({ id: 'y' })]));
+    expect(annotationsSignature([annotation({ id: 'x' })])).not.toBe(annotationsSignature([annotation({ id: 'y' })]));
   });
 
   it('distinguishes different note text on the same span', () => {
     const one = annotation({ kind: 'note', note: 'first thought' });
     const two = annotation({ kind: 'note', note: 'second thought' });
     expect(annotationsSignature([one])).not.toBe(annotationsSignature([two]));
+  });
+
+  it('includes selected text, preserves long notes and cannot collide on delimiters', () => {
+    expect(annotationsSignature([annotation({ text: 'changed text' })])).not.toBe(annotationsSignature([annotation()]));
+    const long = 'a'.repeat(5000);
+    const rows = buildPracticeAnnotationRows({ annotations: [annotation({ text: long, note: long })], userId: USER_ID, unitId: UNIT_UUID });
+    expect(rows[0].selected_text).toBe(long);
+    expect(rows[0].note).toBe(long);
+    expect(annotationsSignature([annotation({ text: 'a:b|c', note: 'd' })])).not.toBe(annotationsSignature([annotation({ text: 'a', note: 'b|c:d' })]));
+  });
+
+  it('canonicalizes an empty note exactly like SQL null without trimming whitespace', () => {
+    expect(annotationsSignature([annotation({ note: '' })])).toBe(annotationsSignature([annotation({ note: null })]));
+    expect(annotationsSignature([annotation({ note: ' ' })])).not.toBe(annotationsSignature([annotation({ note: null })]));
+    expect(mapRemoteAnnotationRow({ id: 'x', paragraph_index: 0, start_offset: 0, end_offset: 1, selected_text: 'x', kind: 'note', note: undefined, metadata: {} })).toBeNull();
+    expect(isPersistableAnnotation(annotation({ text: 'a'.repeat(20_001) }))).toBe(false);
   });
 
   it('is stable across a build → map round trip (no restore-echo)', () => {

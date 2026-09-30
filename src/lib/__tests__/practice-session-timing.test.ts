@@ -40,6 +40,7 @@ describe('DEFAULT_EXAM_SECONDS_BY_SKILL', () => {
       listening: 600,
       writing: 2400,
       speaking: 120,
+      translation: 1800,
     });
   });
 });

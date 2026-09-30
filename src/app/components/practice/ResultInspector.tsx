@@ -13,7 +13,8 @@ import {
   WarningCircle,
 } from '@phosphor-icons/react';
 import { buildPracticeReviewReport, type PracticeReviewTone } from '@/lib/practice-session-report';
-import type { PracticeQuestion } from '@/lib/types';
+import { getExamLibraryHref } from '@/lib/exam-config';
+import type { ExamType, PracticeQuestion } from '@/lib/types';
 import { riseChild, springSnap, staggerParent } from '../ui/motion-presets';
 import WrongBookSync from './WrongBookSync';
 
@@ -26,6 +27,7 @@ function queueToneClass(tone: PracticeReviewTone) {
 }
 
 export default function ResultInspector({
+  exam = 'ielts',
   questions,
   answers,
   showResults,
@@ -40,6 +42,7 @@ export default function ResultInspector({
   onClearLocalData,
   onSelectQuestion,
 }: {
+  exam?: ExamType;
   questions: PracticeQuestion[];
   answers: Record<string, string>;
   showResults: boolean;
@@ -55,6 +58,7 @@ export default function ResultInspector({
   onSelectQuestion: (questionId: string) => void;
 }) {
   const report = buildPracticeReviewReport({
+    exam,
     questions,
     answers,
     showResults,
@@ -64,12 +68,14 @@ export default function ResultInspector({
     elapsedSeconds,
   });
   const { score, canReveal, manualOnly, noteCount, elapsedLabel, queue, completionPercent, questionTypeStats, focusSummary, nextSteps, rubricSummary } = report;
-  const headline = showResults ? 'Local attempt complete' : '只读预览模式';
+  const headline = showResults ? '本次练习复盘' : '答题中';
   const summary = showResults
     ? manualOnly
-      ? `当前有 ${score.manualReview}/${score.total} 份回应进入本地待反馈状态。成绩存在本机，可以选择存入错题本。`
-      : `当前本地命中 ${score.correct}/${score.objectiveTotal} 道客观题，accuracy ${score.accuracy}%。成绩存在本机，可以选择存入错题本。`
-    : '完成本地检查后，这里会生成本机 Review Report 和复盘队列。';
+      ? `已填写 ${score.answered}/${score.total} 份主观回应，请对照参考内容自评；当前不提供自动评分。`
+      : score.objectiveTotal > 0
+        ? `客观题答对 ${score.correct}/${score.objectiveTotal}，正确率 ${score.accuracy}%。主观回应不计入客观题正确率。`
+        : '暂无可复盘的题目。'
+    : '完成答题后可检查客观题，并对照参考内容复盘主观回应。';
 
   return (
     <div className="overflow-hidden rounded-2xl border border-line bg-ink text-white shadow-sm">
@@ -87,7 +93,7 @@ export default function ResultInspector({
         <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <PreviewMetric label="已填写" value={`${score.answered}/${score.total}`} />
           <PreviewMetric label="完成度" value={`${completionPercent}%`} />
-          <PreviewMetric label={manualOnly ? '待反馈' : '正确率'} value={showResults ? manualOnly ? String(score.manualReview) : `${score.accuracy}%` : '待检查'} />
+          <PreviewMetric label={manualOnly ? '待自评' : '客观题正确率'} value={showResults ? manualOnly ? String(score.manualReview) : score.objectiveTotal > 0 ? `${score.accuracy}%` : '不适用' : '待检查'} />
           <PreviewMetric label="用时" value={elapsedLabel} />
         </div>
 
@@ -100,12 +106,12 @@ export default function ResultInspector({
         <div className="mt-5 rounded-2xl border border-white/10 bg-white/[0.06] p-4">
           <div className="flex items-center gap-2 text-xs font-semibold text-white/65">
             <LockKey size={14} weight="regular" />
-            {showResults ? '本地 Review Report' : '下一阶段'}
+            {showResults ? '复盘报告' : '检查与复盘'}
           </div>
           <p className="mt-2 text-xs leading-relaxed text-white/55">
             {showResults
               ? focusSummary
-              : '点击本地检查后会锁定当前答案，生成本机复盘队列；你仍可返回编辑并重新检查。'}
+              : '检查会冻结本次提交的答案。补写自评、错因和笔记会更新同一次复盘；实际修改已提交答案会开始新记录，不覆盖原答案。保存状态见页面上方。'}
           </p>
         </div>
 
@@ -114,11 +120,11 @@ export default function ResultInspector({
             <p className="text-xs font-semibold text-white/65">Question Type Breakdown</p>
             <div className="mt-3 space-y-2">
               {questionTypeStats.map((stat) => (
-                <div key={stat.questionType} className="rounded-2xl border border-white/10 bg-white/[0.05] px-3 py-2">
+                <div key={`${stat.questionType}:${stat.label}`} className="rounded-2xl border border-white/10 bg-white/[0.05] px-3 py-2">
                   <div className="flex items-center justify-between gap-3 text-xs">
                     <span className="font-semibold text-white/75">{stat.label}</span>
                     <span className="font-semibold tabular-nums text-white/55">
-                      {stat.accuracy === null ? `${stat.answered}/${stat.total} done` : `${stat.correct}/${stat.total - stat.manualReview} · ${stat.accuracy}%`}
+                      {stat.accuracy === null ? `${stat.answered}/${stat.total} 已填写` : `${stat.correct}/${stat.objectiveTotal} · ${stat.accuracy}%`}
                     </span>
                   </div>
                   <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10">
@@ -135,12 +141,12 @@ export default function ResultInspector({
           </div>
         )}
 
-        {showResults && rubricSummary.ratedQuestions > 0 && (
+        {showResults && exam === 'ielts' && rubricSummary.ratedQuestions > 0 && (
           <div className="mt-5 rounded-2xl border border-sky-200/20 bg-sky-200/10 p-4">
             <p className="text-xs font-semibold text-sky-100">Rubric Self-rating</p>
             <p className="mt-2 text-xs leading-relaxed text-sky-100/70">
               已完成 {rubricSummary.ratedQuestions} 份主观回应自评
-              {rubricSummary.averageBand ? ` · 平均 Band ${rubricSummary.averageBand}` : ''}。这是本地自评，不代表正式评分。
+              {rubricSummary.averageBand !== null ? ` · 平均 Band ${rubricSummary.averageBand}` : ''}。这是本地自评，不代表正式评分。
             </p>
           </div>
         )}
@@ -167,7 +173,7 @@ export default function ResultInspector({
             className="flex items-center justify-center gap-2 rounded-xl bg-white px-4 py-3 text-sm font-semibold text-ink transition-all duration-200 hover:-translate-y-0.5 hover:bg-white/90 active:scale-[0.98] disabled:cursor-not-allowed disabled:bg-white/12 disabled:text-white/35 disabled:hover:translate-y-0"
           >
             {showResults ? <PencilSimpleLine size={17} weight="bold" /> : <CheckCircle size={17} weight="bold" />}
-            {showResults ? '编辑答案' : '生成本地 Report'}
+            {showResults ? '返回编辑（修改后为新练习）' : '检查并保存本次练习'}
           </button>
           <button
             type="button"
@@ -181,7 +187,7 @@ export default function ResultInspector({
 
         {showResults && (
           <Link
-            href="/practice/sessions"
+            href={getExamLibraryHref(exam)}
             className="mt-3 flex items-center justify-center gap-2 rounded-xl border border-white/12 px-4 py-3 text-sm font-semibold text-white/75 transition-all duration-200 hover:-translate-y-0.5 hover:bg-white/10 active:scale-[0.98]"
           >
             返回 Session Library
@@ -194,7 +200,7 @@ export default function ResultInspector({
           onClick={onClearLocalData}
           className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-red-200/20 bg-red-200/10 px-4 py-3 text-sm font-semibold text-red-100 transition-all duration-200 hover:-translate-y-0.5 hover:bg-red-200/15 active:scale-[0.98]"
         >
-          清空本地 Session 数据
+          清理本机草稿与标注
         </button>
       </div>
 
@@ -203,7 +209,7 @@ export default function ResultInspector({
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
               <p className="text-sm font-semibold text-white">Review Queue</p>
-              <p className="mt-1 text-xs text-white/45">优先显示错题、跳过、待反馈、标记和有笔记的题。</p>
+              <p className="mt-1 text-xs text-white/45">优先显示错题、跳过、待自评、标记和有笔记的题。</p>
             </div>
             <span className="rounded-full border border-white/10 bg-white/[0.06] px-3 py-1 text-xs font-semibold text-white/60">
               {queue.length} items

@@ -251,46 +251,42 @@ body {
 
 
 
-/* Dashboard portal treatment: the reference's command-console hierarchy translated to learning actions. */
-.variant-dashboard-shell { background: #0f0b14; color: #f8f4f9; }
-.variant-dashboard-shell nav { position: relative; z-index: 10; }
+/* Dashboard: opaque surfaces and restrained accents for everyday practice. */
+.variant-dashboard-shell {
+  background: #f6f7f9;
+  color: #252832;
+  color-scheme: light;
+}
+.variant-dashboard-shell nav { position: relative; }
 .variant-dashboard-shell nav > div {
-  border-color: rgba(255, 255, 255, 0.2);
-  background: rgba(255, 255, 255, 0.05);
-  box-shadow: 0 20px 50px -36px rgba(0, 0, 0, 0.95);
+  border-color: #dfe2e8;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: none;
+  backdrop-filter: none;
 }
-.variant-dashboard-shell nav .bg-ink { background: #f8f4f9; color: #2d1b33; }
-.variant-dashboard-shell nav .text-white { color: #2d1b33; }
-.variant-dashboard-shell nav .text-ink-subtle { color: rgba(248, 244, 249, 0.62); }
-.variant-dashboard-shell nav a:hover { background: rgba(255, 255, 255, 0.1); color: #f8f4f9; }
-.variant-dashboard-shell nav .bg-accent-tint { background: rgba(255, 255, 255, 0.12); color: #c2a5cf; }
-.variant-dashboard > canvas {
-  position: fixed;
-  inset: 0;
-  width: 100vw;
-  height: 100vh;
-}
-.variant-dashboard .text-ink { color: #f8f4f9; }
-.variant-dashboard .text-ink-subtle,
-.variant-dashboard .text-ink-muted { color: rgba(248, 244, 249, 0.6); }
-.variant-dashboard .border-line { border-color: rgba(255, 255, 255, 0.16); }
+.variant-dashboard-shell nav .bg-ink { background: #f0f2f5; color: #454b58; }
+.variant-dashboard-shell nav .text-white { color: #454b58; }
+.variant-dashboard-shell nav .text-white\/75 { color: #626775; }
+.variant-dashboard-shell nav .text-ink-subtle { color: #626775; }
+.variant-dashboard-shell nav a { border-radius: 10px; transition: color 160ms, background-color 160ms; }
+.variant-dashboard-shell nav a:hover { background: #f0f2f5; color: #252832; transform: none; }
+.variant-dashboard-shell nav .bg-accent-tint { background: #f1eaf4; color: #6d4c7d; }
+.variant-dashboard .text-ink { color: #252832; }
+.variant-dashboard .text-ink-muted { color: #454b58; }
+.variant-dashboard .text-ink-subtle { color: #626775; }
+.variant-dashboard .border-line { border-color: #dfe2e8; }
 .variant-dashboard .bg-surface,
 .variant-dashboard .bg-white\/85,
-.variant-dashboard .bg-white\/75 { background: rgba(255, 255, 255, 0.04); }
-.variant-dashboard .bg-accent-tint { background: rgba(255, 255, 255, 0.1); }
-.variant-dashboard .text-accent { color: #c2a5cf; }
+.variant-dashboard .bg-white\/75 { background: #fff; }
+.variant-dashboard .bg-line { background: #dfe2e8; }
+.variant-dashboard .bg-accent-tint { background: #f1eaf4; }
+.variant-dashboard .text-accent { color: #6d4c7d; }
 .variant-dashboard .bg-accent { background: #6d4c7d; }
-.variant-dashboard .rounded-\[1\.5rem\] { border-radius: 2rem; }
-.variant-dashboard .rounded-\[1\.5rem\].border,
-.variant-dashboard .rounded-\[1\.5rem\] { border-color: rgba(255, 255, 255, 0.2); }
-.variant-dashboard .shadow-\[0_24px_70px_-48px_rgba\(45\,27\,51\,0\.95\)\] { box-shadow: 0 24px 70px -48px rgba(0, 0, 0, 0.95); }
-.variant-dashboard .text-amber-800 { color: #f0c98d; }
-.variant-dashboard .bg-amber-100 { background: rgba(240, 201, 141, 0.14); }
-.variant-dashboard .border-amber-200 { border-color: rgba(240, 201, 141, 0.3); }
-.variant-dashboard .bg-amber-50 { background: rgba(240, 201, 141, 0.1); }
-.variant-dashboard .text-amber-700 { color: #f0c98d; }
-.variant-dashboard .text-white\/70 { color: rgba(248, 244, 249, 0.7); }
-.variant-dashboard .text-white\/55 { color: rgba(248, 244, 249, 0.55); }
+.variant-dashboard .bg-accent:hover { background: #543762; }
+.variant-dashboard .portal-action-card { transition: border-color 160ms, background-color 160ms; }
+.variant-dashboard .portal-action-card:hover { border-color: #a48caf; background: #fcfbfd; }
+.variant-dashboard-shell :is(a, button):focus-visible { outline: 2px solid #6d4c7d; outline-offset: 3px; }
 
 @media (max-width: 700px) {
   .variant-dashboard { padding-top: 1rem; }
@@ -299,12 +295,14 @@ body {
 
 
 
-/* Reference portal atmosphere: three soft nodes instead of the entry-page arc. */
+/* A quiet, solid dashboard surface keeps attention on learning actions. */
 .variant-dashboard {
   isolation: isolate;
   overflow-x: hidden;
+  background: #f6f7f9;
 }
-.variant-dashboard::before,
+
+/* Keep the settings atmosphere independent of the dashboard. */
 .variant-settings::before {
   content: "";
   position: fixed;
@@ -324,7 +322,6 @@ body {
     radial-gradient(circle 290px at 42% 110%, rgba(49, 46, 129, 0.2), transparent 76%),
     #0a0a0c;
 }
-.variant-dashboard::after,
 .variant-settings::after {
   content: "";
   position: fixed;
@@ -340,7 +337,6 @@ body {
 }
 
 @media (prefers-reduced-transparency: reduce) {
-  .variant-dashboard::after,
   .variant-settings::after { display: none; }
 }
 
@@ -376,33 +372,6 @@ body {
   opacity: 0.6;
 }
 
-
-/* Keep dashboard metrics readable on the dark portal surface. */
-.variant-dashboard .bg-surface,
-.variant-dashboard .bg-white\/85,
-.variant-dashboard .bg-white\/75 {
-  background-color: rgba(255, 255, 255, 0.04) !important;
-}
-.variant-dashboard .bg-line {
-  background-color: rgba(255, 255, 255, 0.08) !important;
-}
-.variant-dashboard .text-ink,
-.variant-dashboard .text-ink-muted,
-.variant-dashboard .text-ink-subtle {
-  color: #f8f4f9;
-}
-.variant-dashboard .text-ink-muted,
-.variant-dashboard .text-ink-subtle {
-  color: rgba(248, 244, 249, 0.6);
-}
-.variant-dashboard .dashboard-recommendation a.bg-white {
-  color: #2d1b33 !important;
-  background-color: #f8f4f9 !important;
-}
-.variant-dashboard .dashboard-recommendation a.bg-white:hover {
-  color: #2d1b33 !important;
-  background-color: #ffffff !important;
-}
 
 .variant-settings .bg-accent-tint { background: rgba(255, 255, 255, 0.07); }
 .variant-settings .text-accent { color: #c2a5cf; }
