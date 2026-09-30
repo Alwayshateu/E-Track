@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+# Newer pushes cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: typecheck · lint · test · build
+    runs-on: ubuntu-latest
+    env:
+      # Never opt into remote read/write suites in this offline verification job.
+      RUN_LIVE_SUPABASE_TESTS: '0'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      # RUN_LIVE_SUPABASE_TESTS is pinned to 0 above; live suites self-skip.
+      # The offline suite needs no real Supabase secrets.
+      - name: Test
+        run: npm test
+
+      # The release-staging regression suite uses Node's runner and is not discovered by Vitest.
+      - name: Test release staging safeguards
+        run: npm run test:staging
+
+      # Pages are force-dynamic (evaluated per request, not at build), so placeholder
+      # public env is enough to satisfy the Supabase client constructors during build.
+      - name: Build
+        run: npm run build
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder-anon-key
